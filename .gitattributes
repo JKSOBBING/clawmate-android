@@ -15,3 +15,7 @@ meeting/android/meeting-sdk/libs/** -text
 meeting/android/meeting-sdk/src/main/python/** text eol=lf
 meeting/android/meeting-sdk/src/main/assets/notices/meeting/** -text whitespace=-trailing-space
 meeting/codec-sources/** -text whitespace=-trailing-space
+
+# Frontend overlays are matched against pinned LF source fragments.
+*.ets text eol=lf
+*.mjs text eol=lf
