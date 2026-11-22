@@ -5,7 +5,7 @@ import com.wangzan101.mika.core.model.OpenAiCompatModel
 import com.wangzan101.mika.core.vision.VisionService
 import android.content.Context
 import android.content.pm.ApplicationInfo
-import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import java.net.URI
 import okhttp3.OkHttpClient
 
 /**
@@ -20,28 +20,28 @@ data class MikaVisionConfig(
     val key: String,
 ) {
     companion object {
-        /** A private debug deployment may nominate exactly one cleartext Decider origin. */
-        fun debugOrigin(context: Context): String {
-            if (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE == 0) return ""
+        /** Only an opted-in build contains this resource. Production uses HTTPS. */
+        fun workflowHttpOrigin(context: Context): String {
+            if (context.packageName != "com.clawmate.experience" && context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE == 0) return ""
             val id = context.resources.getIdentifier("workflow_decider_http_origin", "string", context.packageName)
             return if (id == 0) "" else context.getString(id)
         }
 
-        fun permitsDebugHttp(url: String, origin: String): Boolean {
-            val endpoint = url.trim().toHttpUrlOrNull() ?: return false
-            val allowed = origin.toHttpUrlOrNull() ?: return false
-            return endpoint.scheme == "http" && allowed.scheme == "http" && endpoint.host == allowed.host &&
-                endpoint.port == allowed.port && endpoint.username.isEmpty() && endpoint.password.isEmpty() &&
-                endpoint.query == null && endpoint.fragment == null &&
-                endpoint.encodedPath.trimEnd('/') in setOf("", "/v1", "/v1/chat/completions")
+        fun permitsWorkflowHttp(url: String, origin: String): Boolean {
+            if (origin.isEmpty()) return false
+            val endpoint = runCatching { URI(url.trim()) }.getOrNull() ?: return false
+            return endpoint.scheme == "http" && endpoint.host != null && endpoint.rawUserInfo == null &&
+                "http://${endpoint.rawAuthority}" == origin.removeSuffix("/") &&
+                endpoint.rawQuery == null && endpoint.rawFragment == null &&
+                endpoint.rawPath.removeSuffix("/") in setOf("", "/v1", "/v1/chat/completions")
         }
 
         /** 地址必须能按 Mika 的规则规范化；模型名留空使用服务默认，最长 180 字；Key 可为空但不得超长。 */
-        fun parse(url: String, model: String, key: String, debugHttpOrigin: String = ""): MikaVisionConfig? {
+        fun parse(url: String, model: String, key: String, workflowHttpOrigin: String = ""): MikaVisionConfig? {
             val name = model.trim()
             if (name.length > 180 || key.length > 4096) return null
-            val base = MikaEndpoints.parse(url)?.second ?: if (permitsDebugHttp(url, debugHttpOrigin)) {
-                url.trim().toHttpUrlOrNull()!!.newBuilder().encodedPath("/v1").build().toString()
+            val base = MikaEndpoints.parse(url)?.second ?: if (permitsWorkflowHttp(url, workflowHttpOrigin)) {
+                workflowHttpOrigin.removeSuffix("/") + "/v1"
             } else return null
             return MikaVisionConfig(base, name, key.trim())
         }

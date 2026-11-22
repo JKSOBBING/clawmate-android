@@ -3,6 +3,7 @@ plugins {
     alias(libs.plugins.kotlin.android)
 }
 
+def experience = providers.gradleProperty('clawmateExperience').map { it.toBoolean() }.getOrElse(false)
 def runtimeDir = file('../.arkui-x-validation/application/runtime')
 android {
     namespace 'com.clawmate.shared'
@@ -17,13 +18,18 @@ android {
         testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
         ndk { abiFilters 'arm64-v8a' }
     }
+    buildTypes {
+        release {
+            manifestPlaceholders = [clawmateReleaseLabel: experience ? 'ClawMate 体验版' : 'ClawMate']
+        }
+    }
     compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = '17' }
     sourceSets.main { assets.srcDirs = [file('src/main/assets'), new File(runtimeDir, 'src/main/assets')]; jniLibs.srcDirs = [new File(runtimeDir, 'libs')] }
     packagingOptions { jniLibs { useLegacyPackaging true } }
 }
-// Internal debug deployments can nominate one HTTP inference service. Release keeps the main network policy.
-abstract class DebugDeciderResources extends DefaultTask {
+// Android network policy scopes hosts. The workflow transport also checks the exact origin and API path.
+abstract class DeciderResources extends DefaultTask {
     @Input abstract Property<String> getOrigin()
     @OutputDirectory abstract DirectoryProperty getOutputDirectory()
     @TaskAction void generate() {
@@ -31,7 +37,7 @@ abstract class DebugDeciderResources extends DefaultTask {
         if (endpoint.scheme != 'http' || !endpoint.host?.matches('[A-Za-z0-9.-]+') || endpoint.userInfo != null ||
                 endpoint.query != null || endpoint.fragment != null || !(endpoint.path in ['', '/']) ||
                 !(endpoint.port == -1 || endpoint.port in 1..65535)) {
-            throw new GradleException('clawmateDebugDeciderOrigin must be an HTTP origin without a path or credentials')
+            throw new GradleException('Decider endpoint must be an HTTP origin without a path or credentials')
         }
         def res = outputDirectory.get().asFile
         new File(res, 'xml').mkdirs()
@@ -43,21 +49,73 @@ abstract class DebugDeciderResources extends DefaultTask {
             "<resources><string name=\"workflow_decider_http_origin\" translatable=\"false\">${endpoint}</string></resources>", 'UTF-8')
     }
 }
+// Only experience releases package the two explicitly distributable model credentials.
+abstract class ExperienceModelAssets extends DefaultTask {
+    @InputFile @PathSensitive(PathSensitivity.NONE) abstract RegularFileProperty getProfile()
+    @Input abstract Property<String> getDeciderOrigin()
+    @OutputDirectory abstract DirectoryProperty getOutputDirectory()
+
+    @TaskAction void generate() {
+        def data = new groovy.json.JsonSlurper().parse(profile.get().asFile)
+        def fields = ['cloudPlannerBaseUrl', 'cloudPlannerModel', 'cloudPlannerApiKey',
+                      'cloudDeciderBaseUrl', 'cloudDeciderModel', 'cloudDeciderApiKey']
+        if (!(data instanceof Map) || data.keySet() != fields.toSet() ||
+                !fields.every { data[it] instanceof String } ||
+                ![data.cloudPlannerApiKey, data.cloudDeciderApiKey].every { it.trim() && it.length() <= 4096 } ||
+                [data.cloudPlannerModel, data.cloudDeciderModel].any { it.length() > 180 } ||
+                data.cloudDeciderBaseUrl != deciderOrigin.get()) {
+            throw new GradleException('Invalid experience model profile')
+        }
+        def planner = new URI(data.cloudPlannerBaseUrl)
+        def plannerPin = java.security.MessageDigest.getInstance('SHA-256').digest(data.cloudPlannerBaseUrl.getBytes('UTF-8')).encodeHex().toString()
+        if (planner.scheme != 'http' || plannerPin != 'b3d6b4016f346759a55c7dd17e690cdf732e62c72bb0c428fa9d943f6628267a' ||
+                planner.host != new URI(deciderOrigin.get()).host || data.cloudPlannerModel || data.cloudDeciderModel) {
+            throw new GradleException('Experience models must use both pinned upstream services and their default models')
+        }
+        def dir = outputDirectory.get().asFile
+        dir.mkdirs()
+        new File(dir, 'experience-models.json').setText(groovy.json.JsonOutput.toJson(data), 'UTF-8')
+    }
+}
+
+def addDeciderResources = { variant, endpoint ->
+    def generate = tasks.register("generate${variant.name.capitalize()}DeciderResources", DeciderResources) {
+        origin.set(endpoint)
+        outputDirectory.set(layout.buildDirectory.dir("generated/decider/${variant.name}/res"))
+    }
+    variant.sources.res.addGeneratedSourceDirectory(generate, { it.outputDirectory })
+}
 def debugDecider = providers.gradleProperty('clawmateDebugDeciderOrigin')
 androidComponents.onVariants(androidComponents.selector().withBuildType('release')) { variant ->
-    variant.applicationId.set('com.clawmate.app')
+    variant.applicationId.set(experience ? 'com.clawmate.experience' : 'com.clawmate.app')
     variant.outputs.each {
-        it.versionCode.set(3)
-        it.versionName.set('1.1.0-rc.1')
+        it.versionCode.set(experience ? 5 : 3)
+        it.versionName.set(experience ? '1.1.0-beta.3' : '1.1.0-rc.1')
+    }
+    if (experience) {
+        // Pin the upstream Decider (including scheme and port). Private deployment inputs stay out of Git.
+        def deployed = providers.gradleProperty('clawmateExperienceDeciderOrigin').map { value ->
+            if (java.security.MessageDigest.getInstance('SHA-256').digest(value.getBytes('UTF-8')).encodeHex().toString() !=
+                    '875258e41860b957782a0cf38207eabb90453566388392a3344e19661d849477') {
+                throw new GradleException('Experience Decider must match the pinned upstream cloudDeciderBaseUrl')
+            }
+            value
+        }
+        def profilePath = providers.gradleProperty('clawmateExperienceModelProfile')
+        def assets = tasks.register("generate${variant.name.capitalize()}ExperienceModels", ExperienceModelAssets) {
+            profile.set(layout.file(profilePath.map { rootProject.file(it) }))
+            deciderOrigin.set(deployed)
+            outputDirectory.set(layout.buildDirectory.dir("generated/experienceModels/${variant.name}"))
+        }
+        variant.sources.assets.addGeneratedSourceDirectory(assets, { it.outputDirectory })
+        addDeciderResources(variant, deployed.orElse(providers.provider {
+            throw new GradleException('Set clawmateExperienceDeciderOrigin to the upstream cloudDeciderBaseUrl for experience releases')
+        }))
     }
 }
 androidComponents.onVariants(androidComponents.selector().withBuildType('debug')) { variant ->
     if (debugDecider.isPresent()) {
-        def generate = tasks.register("generate${variant.name.capitalize()}DeciderResources", DebugDeciderResources) {
-            origin.set(debugDecider)
-            outputDirectory.set(layout.buildDirectory.dir("generated/decider/${variant.name}/res"))
-        }
-        variant.sources.res.addGeneratedSourceDirectory(generate, { it.outputDirectory })
+        addDeciderResources(variant, debugDecider)
     }
 }
 dependencies {

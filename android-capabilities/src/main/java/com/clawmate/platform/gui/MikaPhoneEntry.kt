@@ -410,8 +410,8 @@ object MikaPhoneEntry {
         maxSteps: Int? = null,
         onEvidence: (String) -> Unit = {},
     ): MikaPhoneResult {
-        val endpoint = MikaEndpoints.parse(baseUrl)
-        if (endpoint == null || modelName.isBlank() || modelName.length > 180 ||
+        val endpoint = MikaEndpoints.planner(baseUrl, MikaEndpoints.experienceProfile(activity).optString("cloudPlannerBaseUrl"))
+        if (endpoint == null || modelName.length > 180 ||
             goal.isBlank() || goal.length > 1000
         ) return MikaPhoneResult("blocked", "请检查 HTTPS 云端模型配置和 1–1000 字的任务")
         if (mode == MikaPhoneMode.CALENDAR_BATCH && !MikaCalendarWriter.hasAccess(activity)) {

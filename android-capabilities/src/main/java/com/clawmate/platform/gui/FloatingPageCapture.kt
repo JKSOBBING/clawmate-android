@@ -4,6 +4,9 @@ import android.accessibilityservice.AccessibilityService
 import android.app.KeyguardManager
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.Color
 import android.graphics.Bitmap
 import android.graphics.Rect
 import android.view.Display
@@ -88,47 +91,130 @@ internal class FloatingPageCapture(private val service: AccessibilityService) {
         })
     }
 
-    private fun canUseOcr(root: AccessibilityNodeInfo): Boolean {
-        val queue = ArrayDeque<AccessibilityNodeInfo>()
-        queue.add(root)
+    private data class Layout(val masks: List<Rect>, val buttons: Set<String>, val visual: Boolean, val complete: Boolean, val body: Rect?, val expression: String?)
+
+    private fun layout(page: Page): Layout {
+        val queue = ArrayDeque<AccessibilityNodeInfo>().apply { add(page.root) }
+        val masked = mutableListOf<Rect>()
+        val buttons = mutableSetOf<String>()
+        val colorOsCalculator = page.pkg == "com.coloros.calculator"
+        var expression: String? = null
+        var body: Rect? = null
+        var visual = false
         var inspected = 0
         while (queue.isNotEmpty()) {
+            if (++inspected > 1024) return Layout(masked, buttons, visual, false, body, expression)
             val node = queue.removeFirst()
-            if (++inspected > 512) return false
             if (!node.isVisibleToUser) continue
-            if (node.isPassword || node.isEditable || node.isAccessibilityDataSensitive) return false
-            for (index in 0 until node.childCount) node.getChild(index)?.let(queue::addLast)
+            val box = Rect().also(node::getBoundsInScreen)
+            val id = node.viewIdResourceName.orEmpty().substringAfter('/')
+            val role = node.className?.toString().orEmpty()
+            if (colorOsCalculator && node.packageName?.toString() == page.pkg && !node.isPassword && !node.isAccessibilityDataSensitive) {
+                if (id in setOf("calculator_frame", "formula_container", "result") && Rect.intersects(box, page.content)) {
+                    val area = Rect(box).apply { intersect(page.content) }
+                    if (body == null) body = area else body.union(area)
+                }
+                // ColorOS exposes the visible arithmetic display as an editable TextView.
+                // Keep its pixels masked and admit only the calculator widget's complete numeric expression.
+                if (id == "formula" && role == "android.widget.TextView" && Rect.intersects(box, page.content)) {
+                    expression = FloatingExcerpts.arithmetic(node.text?.toString())
+                }
+            }
+            if (node.isPassword) return Layout(masked, buttons, visual, false, body, expression)
+            if (node.isEditable || node.isAccessibilityDataSensitive || node.packageName?.toString() != page.pkg) {
+                if (box.isEmpty) return Layout(masked, buttons, visual, false, body, expression)
+                if (box.intersect(page.content)) masked.add(box)
+                continue
+            }
+            val candidate = role.endsWith("WebView")
+            if (candidate && box.intersect(page.content) && (body == null || box.width().toLong() * box.height() > body.width().toLong() * body.height())) body = Rect(box)
+            if (role.endsWith("Button")) {
+                listOf(node.text, node.contentDescription).mapNotNullTo(buttons) { it?.toString()?.trim() }
+            }
+            if ((role.endsWith("WebView") || role.endsWith("ImageView") || role.endsWith("SurfaceView") ||
+                    role.endsWith("TextureView") || role.endsWith("View") && node.childCount == 0 && node.text.isNullOrBlank()) &&
+                box.width() >= page.content.width() / 3 && box.height() >= page.content.height() / 12) visual = true
+            for (i in 0 until node.childCount) {
+                val child = node.getChild(i) ?: return Layout(masked, buttons, visual, false, body, expression)
+                queue.addLast(child)
+            }
         }
-        return true
+        return Layout(masked, buttons, visual, true, body, expression)
     }
 
-    suspend fun save(scope: CoroutineScope, stillIdle: () -> Boolean) {
+    private fun recognize(page: Page, image: Bitmap, masks: List<Rect>): List<String> {
+        val mutable = image.copy(Bitmap.Config.ARGB_8888, true) ?: error("无法读取截图")
+        try {
+            val canvas = Canvas(mutable)
+            val paint = Paint().apply { color = Color.BLACK }
+            val sx = mutable.width.toFloat() / page.bounds.width()
+            val sy = mutable.height.toFloat() / page.bounds.height()
+            for (rect in masks) {
+                canvas.drawRect((rect.left - page.bounds.left) * sx - 2, (rect.top - page.bounds.top) * sy - 2,
+                    (rect.right - page.bounds.left) * sx + 2, (rect.bottom - page.bounds.top) * sy + 2, paint)
+            }
+            val cropped = page.cropContent(mutable)
+            try {
+                val recognizer = TextRecognition.getClient(ChineseTextRecognizerOptions.Builder().build())
+                try {
+                    val result = Tasks.await(recognizer.process(InputImage.fromBitmap(cropped, 0)), 10, TimeUnit.SECONDS)
+                    return result.textBlocks.flatMap { block -> block.lines.map { it.text.trim() } }.filter(String::isNotEmpty)
+                } finally { recognizer.close() }
+            } finally { if (cropped !== mutable) cropped.recycle() }
+        } finally { mutable.recycle() }
+    }
+
+    suspend fun save(scope: CoroutineScope, stillIdle: () -> Boolean): GuiCollection {
         val before = page()
+        val initial = layout(before)
         val image = snapshot(before.id)
         val record = try {
             val current = page()
             check(stillIdle() && before.sameWindow(current)) { "页面已切换，请重试" }
             val label = service.packageManager.getApplicationLabel(service.packageManager.getApplicationInfo(current.pkg, 0)).toString()
             val visible = GuiCollection.read(scope, current.root, current.content, current.pkg, label, null).record
-            if (visible.lines.isNotEmpty()) visible else {
-                check(canUseOcr(current.root)) { "当前页面没有可采集的公开文字" }
-                val text = withContext(Dispatchers.IO) {
-                    val cropped = current.cropContent(image)
+            val info = layout(current)
+            val body = info.body
+            val expression = info.expression?.takeIf { it == initial.expression }
+            val bodyLines = listOfNotNull(expression) + if (body == null) visible.lines else
+                GuiCollection.read(scope, current.root, body, current.pkg, label, null).record.lines
+            val accessible = FloatingExcerpts.content(bodyLines, emptyList(), info.buttons)
+            val needsOcr = visible.partial || info.visual || accessible.count { it.length >= 16 } < 3 ||
+                accessible.size * 2 <= visible.lines.size
+            val masks = initial.masks + info.masks
+            var status = "无需补读"
+            var ocr = emptyList<String>()
+            if (needsOcr) {
+                if (!initial.complete || !info.complete || masks.any { it.contains(current.content) }) status = "隐私区域已跳过"
+                else {
                     try {
-                        val recognizer = TextRecognition.getClient(ChineseTextRecognizerOptions.Builder().build())
-                        try { Tasks.await(recognizer.process(InputImage.fromBitmap(cropped, 0)), 10, TimeUnit.SECONDS).text }
-                        finally { recognizer.close() }
-                    } finally { if (cropped !== image) cropped.recycle() }
+                        ocr = withContext(Dispatchers.IO) { recognize(if (body == null) current else current.copy(content = body), image, masks) }
+                        status = if (ocr.isEmpty()) "未识别到文字" else "已补读"
+                    } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+                    catch (_: Exception) { status = "补读失败" }
                 }
-                val lines = text.take(6000).lines().map { it.trim().take(600) }.filter { it.isNotEmpty() }.distinct()
-                visible.copy(lines = lines.take(80), partial = text.length > 6000 || lines.size > 80)
             }
+            var truncated = visible.partial
+            var chars = 0
+            val original = mutableListOf<String>()
+            for (line in ocr) {
+                if (original.size >= 80 || chars >= 6000) { truncated = true; break }
+                val part = line.take(minOf(600, 6000 - chars))
+                if (part.length < line.length) truncated = true
+                chars += part.length
+                original.add(part)
+            }
+            val useful = FloatingExcerpts.content(bodyLines, original, info.buttons)
+            check(visible.lines.isNotEmpty() || original.isNotEmpty()) { "当前页没有读到可保存的文字" }
+            val lookup = withContext(Dispatchers.IO) { runCatching { FloatingExcerpts.matches(service, current.pkg) } }
+            val tasks = lookup.getOrDefault(emptyList())
+            val excerpt = FloatingExcerpt(useful, original, status, FloatingExcerpts.scene(current.pkg, useful, tasks), tasks.map { it.first }, lookup.isSuccess)
+            visible.copy(lines = (listOfNotNull(expression) + visible.lines).distinct().take(80), summary = floatingSummary(useful).ifBlank { "仅采集到界面控件" }, partial = truncated, floating = excerpt)
         } finally { image.recycle() }
-        check(record.lines.isNotEmpty()) { "当前页没有读到可保存的文字" }
         val finalPage = page()
         check(stillIdle() && before.sameWindow(finalPage)) { "页面已切换，请重试" }
-        val summarized = record.copy(summary = floatingSummary(record.lines))
-        withContext(Dispatchers.IO) { GuiCollectionHistory.save(service, summarized) }
+        withContext(Dispatchers.IO) { GuiCollectionHistory.save(service, record) }
+        return record
     }
 }
 

@@ -1,3 +1,4 @@
+import { InstalledModels } from './InstalledModels';
 import { common } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
 import { SETTINGS_STRING_KEYS, SETTINGS_BOOLEAN_KEYS } from './SettingsKeys';
@@ -29,9 +30,26 @@ export class SettingsStore {
     store.flushSync();
   }
 
-  static initialize(context: common.Context): void {
+  static initialize(context: common.Context, profileJson: string = '{}'): void {
     let store = preferences.getPreferencesSync(context, { name: 'shared_frontend_settings' });
     SettingsStore.store = store;
+    if (profileJson !== '{}') {
+      const profile = JSON.parse(profileJson) as Record<string, string>;
+      InstalledModels.configure(profile);
+      if (!store.hasSync('experienceModelDefaultsApplied')) {
+        ['Planner', 'Decider'].forEach((role: string): void => {
+          const prefix = 'cloud' + role;
+          const customized = ['BaseUrl', 'Model', 'ApiKey'].some((suffix: string): boolean =>
+            String(store.getSync(prefix + suffix, '')).trim().length > 0);
+          if (!customized && !String(store.getSync('cloudApiKey', '')).trim()) {
+            store.putSync(prefix + 'BaseUrl', profile[prefix + 'BaseUrl']);
+            store.putSync(prefix + 'Model', profile[prefix + 'Model']);
+          }
+        });
+        store.putSync('experienceModelDefaultsApplied', true);
+        store.flushSync();
+      }
+    }
     SETTINGS_STRING_KEYS.forEach((key: string): void => {
       if (store.hasSync(key)) { AppStorage.setOrCreate(key, String(store.getSync(key, ''))); }
     });

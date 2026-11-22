@@ -333,9 +333,21 @@ object GuiControlEntry {
         }, 250)
     }
 
-    fun showCollections(activity: Activity) {
+    fun floatingGroups(context: android.content.Context): String {
+        val groups = GuiCollectionHistory.read(context).filter { it.floating != null }
+            .groupBy { it.floating!!.scene to it.sourcePackage }
+        val result = org.json.JSONArray()
+        for ((key, group) in groups) {
+            val latest = group.first()
+            result.put(org.json.JSONObject().put("scene", key.first).put("pkg", key.second).put("label", latest.sourceLabel)
+                .put("count", group.size).put("summary", latest.summary).put("capturedAt", latest.capturedAt))
+        }
+        return result.toString()
+    }
+
+    fun showCollections(activity: Activity, scene: Int? = null, pkg: String = "", onDeleted: () -> Unit = {}) {
         foreground(activity)
-        runCatching { GuiCollectionHistory.show(activity) }.onFailure {
+        runCatching { GuiCollectionHistory.show(activity, scene, pkg, onDeleted) }.onFailure {
             AlertDialog.Builder(activity, com.clawmate.platform.R.style.ClawMateDialog).setMessage("无法读取本机采集记录，请稍后重试。")
                 .setPositiveButton("知道了", null).show()
         }

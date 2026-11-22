@@ -3,4 +3,9 @@
         <intent><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.HOME" /></intent>
         <intent><action android:name="android.intent.action.TTS_SERVICE" /></intent>
     </queries>
+    <application>
+        <activity android:name="com.clawmate.platform.gui.CollectionWindowActivity" android:exported="false"
+            android:taskAffinity="${applicationId}.capture" android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+    </application>
 </manifest>

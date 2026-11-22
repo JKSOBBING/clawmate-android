@@ -16,10 +16,10 @@ function harness() {
   const state = { pending: true, accepted: true, choice: 1, images: 0, requests: [], cancelled: false,
     dialog: async () => ({index: state.choice}), prepare: async () => ['data:image/jpeg;base64,/9j/2Q=='], response: async () => 'actual model output' };
   let reject;
-  const Vlm = module('shared-frontend/adapters/platform/WorkflowVlm.ets', 'WorkflowVlm', { nonTodayWechatTimeLabel,
+  const Vlm = module('shared-frontend/adapters/platform/WorkflowVlm.ets', 'WorkflowVlm', { nonTodayWechatTimeLabel, InstalledModels: { key: (_role, _url, value) => value },
     AppStorage: { get: key => settings.get(key) },
     promptAction: { showDialog: (...args) => state.dialog(...args) },
-    Bridge: { createBridge: () => ({callMethod: async method => { if(method === 'workflowDeciderHttpAllowed') return false; assert.equal(method,'workflowToolPending'); return state.pending; }}) },
+    Bridge: { createBridge: () => ({callMethod: async (method, url) => { if(method === 'workflowDeciderHttpAllowed') return !!state.allowedHttp && url === state.allowedHttp; assert.equal(method,'workflowToolPending'); return state.pending; }}) },
     PrivacyConsent: { requireAccepted: () => { if (!state.accepted) throw Error('revoked'); } },
     AiServiceAccess: { requireAllowed: () => { if (!state.accepted) throw Error('revoked'); } },
     ChatImages: { prepare: async (...args) => { state.images++; return state.prepare(...args); } },
@@ -118,6 +118,24 @@ await check('blank Decider name survives workflow consent and uses the server de
   h.state.dialog = async options => { assert.ok(options.message.includes('服务端默认 Decider')); return {index: 1}; };
   const result = JSON.parse(await h.model.authorizeCollection(h.request, h.authorize, () => false));
   assert.equal(result.model, ''); assert.equal(result.url, h.settings.get('cloudDeciderBaseUrl'));
+  assert.equal(h.state.requests.length, 0);
+});
+await check('cleartext exception is specific to native workflow consent and the dedicated Decider key', async () => {
+  const h = harness();
+  const origin = 'http://fixture.invalid:8080';
+  h.state.allowedHttp = origin;
+  h.settings.set('cloudDeciderBaseUrl', origin);
+  h.settings.set('cloudDeciderApiKey', '');
+  h.settings.set('cloudApiKey', 'planner-only');
+  h.state.dialog = async options => { assert.match(options.message, /HTTP 明文/); return { index: 1 }; };
+  const result = JSON.parse(await h.model.authorizeCollection(h.request, h.authorize, () => false));
+  assert.equal(result.url, origin);
+  assert.equal(result.key, '');
+  await assert.rejects(h.model.prepareGui(h.authorize), /HTTPS/);
+  await assert.rejects(h.model.execute('run', h.request, () => false, h.authorize), /HTTPS/);
+  h.settings.set('cloudDeciderBaseUrl', 'http://fixture.invalid:9003');
+  await assert.rejects(h.model.authorizeCollection(h.request, h.authorize, () => false), /HTTPS/);
+  assert.equal(h.state.images, 0);
   assert.equal(h.state.requests.length, 0);
 });
 await check('missing or unsafe endpoint fails before authorization, image reads and requests', async () => {

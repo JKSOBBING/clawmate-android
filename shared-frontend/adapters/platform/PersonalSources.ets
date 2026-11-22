@@ -1,4 +1,5 @@
-﻿import Bridge from '@arkui-x.bridge';
+﻿import { InstalledModels, validatePlanner } from './InstalledModels';
+import Bridge from '@arkui-x.bridge';
 import { CloudChatToolDefinition, CloudChatCompletionOptions } from '../utils/CloudModelClient';
 import { promptAction } from '@kit.ArkUI';
 import { AiServiceAccess } from '../utils/AiServiceAccess';
@@ -92,15 +93,15 @@ export class PersonalSources {
       // Mail retention is enforced at query time, including after a restart without a refresh.
       if (kind === 'mail') { let cutoff = new Date(); cutoff.setHours(0, 0, 0, 0); cutoff.setDate(cutoff.getDate() - 2); items = items.filter((i: SourceItem): boolean => i.start >= cutoff.getTime()); }
       let base = AppStorage.get<string>('cloudPlannerBaseUrl') || ''; let model = AppStorage.get<string>('cloudPlannerModel') || '';
-      let key = AppStorage.get<string>('cloudPlannerApiKey') || AppStorage.get<string>('cloudApiKey') || '';
+      let key = InstalledModels.key('Planner', base, AppStorage.get<string>('cloudPlannerApiKey') || AppStorage.get<string>('cloudApiKey') || '');
       if (expected && (expected.baseUrl !== base || expected.model !== model || expected.apiKey !== key)) { throw new Error('聊天模型配置已变化，请重新发送'); }
-      if (!base.startsWith('https://') || !model.trim()) { throw new Error('请先配置HTTPS Planner服务和模型'); }
+      validatePlanner(base.trim(), model.trim());
       let choice = await promptAction.showDialog({ title: kind === 'calendar' ? '允许本次日历问答？' : '允许本次邮件问答？',
         message: '将向 ' + base + '（' + model + '）发送最多10项匹配记录的标题、时间及有限正文。同步于 ' + new Date(snapshot.syncedAt).toLocaleString() + '。内容可能含私人信息，回答将保存在聊天记录。',
         buttons: [{ text: '取消', color: '#666666' }, { text: '允许本次', color: '#4F68FF' }] });
       if (choice.index !== 1 || !active()) { throw new Error('用户未同意或请求已取消'); }
       AiServiceAccess.requireAllowed(); PrivacyConsent.requireAccepted();
-      if (key !== (AppStorage.get<string>('cloudPlannerApiKey') || AppStorage.get<string>('cloudApiKey') || '')) { throw new Error('模型凭据改变，请重试'); }
+      if (key !== (InstalledModels.key('Planner', base, AppStorage.get<string>('cloudPlannerApiKey') || AppStorage.get<string>('cloudApiKey') || ''))) { throw new Error('模型凭据改变，请重试'); }
       if (base !== (AppStorage.get<string>('cloudPlannerBaseUrl') || '') || model !== (AppStorage.get<string>('cloudPlannerModel') || '')) { throw new Error('模型配置改变，请重试'); }
       let latest = await PersonalSources.snapshot(kind);
       if (latest.syncedAt !== snapshot.syncedAt) { throw new Error('来源已变化或权限撤回，请重试'); }

@@ -12,8 +12,13 @@ private val VisibleTextLine.x get() = (bounds[0] + bounds[2]) / 2
 
 internal object EleOrderFields {
     val count = Regex("""共([1-9]\d{0,2})[件份个]""")
-    private val paid = Regex("""实付(?:款|金额)?[：:]?[¥Y]?(\d+(?:\.\d{1,2})?)$""")
+    private val paid = Regex("""实付(?:款|金额)?[：:]?[¥Y]?(\d+(?:\.\d{1,2})?)(?:元)?$""")
     fun amount(text: String) = paid.find(text.clean())?.groupValues?.get(1)
+    fun paidOnDisclosure(lines: List<VisibleTextLine>, y: Int): String? {
+        val row = lines.filter { it.bounds[2] > 520 && kotlin.math.abs(it.y - y) <= 11 }.sortedBy { it.x }
+        val candidates = row.mapNotNull { amount(it.text) } + listOfNotNull(amount(row.joinToString("") { it.text }))
+        return candidates.distinct().singleOrNull()
+    }
     fun isOrderDetail(lines: List<VisibleTextLine>): Boolean {
         val labels = lines.map { it.text.clean() }
         return labels.any { it.startsWith("订单号") || it.startsWith("订单编号") } &&
@@ -46,6 +51,19 @@ internal object EleOrderFields {
     fun productTitle(text: String): String {
         if ('“' !in text && '”' !in text) return text
         return quotedChinese.replace(text) { "“" + it.groupValues[1] + "”" }
+    }
+
+    private val quoteMarks = setOf('"', '“', '”')
+    fun unmatchedQuote(text: String) = text.count { it in quoteMarks } % 2 == 1
+    fun witnessedQuotes(preferred: String, alternatives: List<String>): String {
+        if (!unmatchedQuote(preferred)) return preferred
+        // Only accept a quote actually seen by another read of the same line. Keep every other character.
+        val candidates = alternatives.map { productTitle(it.clean()) }.distinct().filter { candidate ->
+            candidate.length == preferred.length + 1 && candidate.indices.any { i ->
+                candidate[i] in quoteMarks && productTitle(candidate.removeRange(i,i+1)) == productTitle(preferred)
+            } && quotedChinese.findAll(candidate).count() * 2 == candidate.count { it in quoteMarks }
+        }
+        return candidates.singleOrNull() ?: preferred
     }
 
     fun products(names: List<VisibleTextLine>, page: List<VisibleTextLine>, start: Int, end: Int): List<String> {
@@ -189,9 +207,11 @@ internal class EleOrderDetails(private val port: MikaScreenPort, private val sna
         val countLine = counts.firstOrNull { EleOrderFields.count.matches(it.text.clean()) } ?: counts.firstOrNull {
             Regex("""共.{0,3}[件份个]""").matches(it.text.clean()) }
         var quantity = countLine?.let { EleOrderFields.count.matchEntire(it.text.clean())?.groupValues?.get(1)?.toInt() }
-        val totalLines = port.readTextRegion(535, (label.y - 23).coerceAtLeast(0), 986, (label.y + 23).coerceAtMost(999), true)
-        val total = EleOrderFields.amount(totalLines.sortedBy { it.x }.joinToString("") { it.text })
-            ?: EleOrderFields.amount(rows.filter { kotlin.math.abs(it.y - label.y) <= 11 }.sortedBy { it.x }.joinToString("") { it.text })
+        val top = (label.y - 23).coerceAtLeast(0)
+        val bottom = (label.y + 23).coerceAtMost(999)
+        val totalLines = port.readTextRegion(535, top, 986, bottom, true)
+        var total = EleOrderFields.paidOnDisclosure(totalLines, label.y) ?: EleOrderFields.paidOnDisclosure(rows, label.y)
+            ?: EleOrderFields.paidOnDisclosure(port.readTextRegion(430, top, 996, bottom, false), label.y)
         // Bind the product area to the collapsed card above this verified price disclosure.
         val merchant = rows.filter { it.bounds[0] < 245 && label.y - it.y in 68..164 &&
             it.text.clean().let { t -> t.contains("闪购") || t.contains(card.merchant.clean().take(3)) } }.maxByOrNull { it.y }
@@ -203,6 +223,11 @@ internal class EleOrderDetails(private val port: MikaScreenPort, private val sna
             delay(430)
             for (attempt in 0..2) {
                 val expanded = read()
+                if (total == null) EleOrderFields.priceLabel(expanded)?.let { price ->
+                    total = EleOrderFields.paidOnDisclosure(expanded, price.y) ?: EleOrderFields.paidOnDisclosure(
+                        port.readTextRegion(430, (price.y-18).coerceAtLeast(0), 996, (price.y+18).coerceAtMost(999), false),
+                        price.y)
+                }
                 val fees = expanded.filter { it.bounds[0] < 150 && it.y > start &&
                     it.text.clean().let { t -> t.startsWith("打包费") || t.startsWith("包装费") || t.startsWith("配送费") || t.startsWith("价格明细") } }
                 val end = fees.minOfOrNull { it.bounds[1] } ?: 951
@@ -214,7 +239,19 @@ internal class EleOrderDetails(private val port: MikaScreenPort, private val sna
                         val original = if (bottom > top) port.readTextRegion(193, top, 745, bottom, false) else emptyList()
                         val text = original.filter { kotlin.math.abs(it.y - line.y) < 8 }
                             .sortedBy { it.x }.joinToString("") { it.text }
-                        val guess = text.ifBlank { line.text }.clean().trimStart('|', ',', '，', '丨')
+                        val raw = text.ifBlank { line.text }.clean().trimStart('|', ',', '，', '丨')
+                        val guess = if (!EleOrderFields.unmatchedQuote(raw)) raw else {
+                            val sameRow = expanded.filter { it.bounds[0] in 173..251 && kotlin.math.abs(it.y - line.y) < 8 }
+                            val alternatives = listOf(line.text) + sameRow.map { it.text }
+                            val recovered = EleOrderFields.witnessedQuotes(raw, alternatives)
+                            if (recovered != raw || bottom <= top) recovered else {
+                                val local = port.readTextRegion((line.bounds[0] - 8).coerceAtLeast(172), top,
+                                    (line.bounds[2] + 9).coerceAtMost(752), bottom, false)
+                                val printed = local.filter { kotlin.math.abs(it.y - line.y) < 8 }
+                                    .sortedBy { it.x }.joinToString("") { it.text }
+                                EleOrderFields.witnessedQuotes(raw, alternatives + printed)
+                            }
+                        }
                         VisibleTextLine(port.verifyPrintedTitle(line, guess), line.bounds)
                     }
                     products = EleOrderFields.products(titleLines, expanded, start, end)

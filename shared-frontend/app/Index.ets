@@ -1,4 +1,5 @@
-﻿import { common } from '@kit.AbilityKit';
+﻿import { InstalledModels, validatePlanner, plannerTestFailure } from '../platform/InstalledModels';
+import { common } from '@kit.AbilityKit';
 import { promptAction, router, KeyboardAvoidMode } from '@kit.ArkUI';
 import { FirstLaunchOnboarding } from '../pages/onboarding/FirstLaunchOnboarding';
 import { FIRST_LAUNCH_ONBOARDING_VERSION, FIRST_LAUNCH_ONBOARDING_STORAGE_KEY } from '../pages/onboarding/OnboardingTypes';
@@ -6,6 +7,7 @@ import { HomePage } from '../pages/home/HomePage';
 import { HomeSecretaryDesk } from '../pages/home/HomeSecretaryDesk';
 import { HomeNote, SecretaryAssignment, SecretaryJob, SecretaryJobState } from '../pages/home/HomeSecretary';
 import { HomeComfortChatStore } from '../pages/home/HomeComfortChatStore';
+import { FloatingArchive } from '../platform/FloatingArchive';
 import { CollectionPage } from '../pages/collection/CollectionPage';
 import { TaskPage } from '../pages/task/TaskPage';
 import { PERSONAL_INFO_MEMORY_SCENE_ID } from '../utils/WorkflowSceneConfig';
@@ -27,7 +29,7 @@ import { AiServiceAccess } from '../utils/AiServiceAccess';
 import { showToastSafely } from '../utils/PromptSafe';
 import { SettingsStore } from '../platform/SettingsStore';
 import { DataManagerFacade, createEmptyHomeProfileViewModel, createEmptyCollectionViewModels } from '../datamanager/DataManagerFacade';
-import { DataManagerModelConfig, HomeProfileViewModel, CollectionViewModel, IndexedEvent } from '../datamanager/DataManagerTypes';
+import { DataManagerModelConfig, HomeProfileViewModel, CollectionViewModel, CollectionGroupViewModel, IndexedEvent } from '../datamanager/DataManagerTypes';
 import { HomeTaskSuggestion, buildHomeTaskSuggestionPrompt, parseHomeTaskSuggestions } from '../pages/home/HomeTaskSuggestion';
 import { HomeComfortConcern, HomeComfortChatMessage, buildHomeComfortConcernPrompt,
   parseHomeComfortConcerns, buildHomeComfortChatMessages, parseHomeComfortReply } from '../pages/home/HomeEmotionalSupport';
@@ -94,6 +96,8 @@ struct Index {
   @State codexTaskSettingsOpen: boolean = false;
   @State codexHistoryOpen: boolean = false;
   @State profile: HomeProfileViewModel = createEmptyHomeProfileViewModel();
+  @State floatingGroups: CollectionGroupViewModel[] = [];
+  private archiveRead: number = 0;
   @State collectionViews: CollectionViewModel[] = createEmptyCollectionViewModels();
   @State comfort: HomeComfortChatStore = new HomeComfortChatStore();
   @State suggestions: HomeTaskSuggestion[] = [];
@@ -180,6 +184,7 @@ struct Index {
   onPageShow(): void { this.resumeModelPolling(); CollectionReminderService.setWindowReady(true); this.startRuntime(); if (this.ready) { this.reloadData(); CollectionReminderService.refresh().catch(() => {}); } }
   onPageHide(): void { this.stopWechat(); CollectionReminderService.setWindowReady(false); this.stopModelPolling(); if (!this.mikaStarting && this.mikaRunId.length === 0) { this.cancelChat(); } this.stopRuntime(); this.stopVoice(); this.stopAsr(); this.saveSettings(); this.persistChat(); }
   aboutToDisappear(): void {
+    Bridge.createBridge('ClawMatePlatform').unRegisterMethod('floatingArchiveChanged').catch(() => {});
     Bridge.createBridge('ClawMatePlatform').unRegisterMethod('floatingNoteHomeArrived').catch(() => {});
     this.wirelessTicket = '';
     this.stopWechat();
@@ -220,8 +225,9 @@ struct Index {
     if (SettingsStore.needsLegacyImport(context)) {
       SettingsStore.importLegacy(context, await migration.callMethod('legacySettings') as string);
     }
-    SettingsStore.initialize(context);
+    SettingsStore.initialize(context, await migration.callMethod('installedModelDefaults') as string);
     CollectionReminderService.initialize(context);
+    await migration.registerMethod({ name: 'floatingArchiveChanged', method: (): boolean => { this.refreshFloatingArchive(); return true; } });
     await migration.registerMethod({ name: 'floatingNoteHomeArrived', method: (): boolean => {
       this.openFloatingHome().catch(() => { showToastSafely('暂时无法打开首页'); }); return true;
     } });
@@ -374,8 +380,16 @@ struct Index {
   private saveSettings(): void {
     try { SettingsStore.save(); } catch (error) { if (this.ready) { showToastSafely('设置保存失败，请重试'); } }
   }
-  private onNavigationChanged(): void { if (this.preparing) { this.cancelChat(); } this.stopVoice(); this.stopAsr(); this.saveSettings(); this.persistChat(); this.drawer = false; }
+  private onNavigationChanged(): void { if (this.tab === MainTabIndex.Summary) { this.refreshFloatingArchive(); } if (this.preparing) { this.cancelChat(); } this.stopVoice(); this.stopAsr(); this.saveSettings(); this.persistChat(); this.drawer = false; }
+  private async refreshFloatingArchive(): Promise<void> {
+    let read = ++this.archiveRead;
+    try {
+      let groups = await FloatingArchive.groups();
+      if (read === this.archiveRead) { this.floatingGroups = groups; }
+    } catch (error) { this.recordRuntime('读取悬浮采集领域失败'); }
+  }
   private reloadData(): void {
+    this.refreshFloatingArchive();
     if (this.facade === null) { return; }
     this.profile = this.facade.loadHomeViewModel();
     this.collectionViews = this.facade.loadCollectionViewModels();
@@ -433,9 +447,9 @@ struct Index {
   private cloudOptions(): CloudChatCompletionOptions {
     let baseUrl = (AppStorage.get<string>('cloudPlannerBaseUrl') || '').trim();
     let model = (AppStorage.get<string>('cloudPlannerModel') || '').trim();
-    if (!baseUrl.startsWith('https://') || model.length === 0) { throw new Error('请先配置 HTTPS 模型地址和模型名称'); }
+    validatePlanner(baseUrl, model);
     return { baseUrl: baseUrl, model: model, messages: [], readTimeout: 60000,
-      apiKey: AppStorage.get<string>('cloudPlannerApiKey') || AppStorage.get<string>('cloudApiKey') || '' };
+      apiKey: InstalledModels.key('Planner', baseUrl, AppStorage.get<string>('cloudPlannerApiKey') || AppStorage.get<string>('cloudApiKey') || '') };
   }
   private homeEvents(): IndexedEvent[] {
     if (this.facade === null) { return []; }
@@ -486,7 +500,7 @@ struct Index {
     AppStorage.setOrCreate('androidMemorySyncBusy', true);
     try {
       let config: DataManagerModelConfig = { baseUrl: '', apiKey: '', enabled: false };
-      if ((AppStorage.get<string>('cloudPlannerBaseUrl') || '').trim() && (AppStorage.get<string>('cloudPlannerModel') || '').trim()) {
+      if ((AppStorage.get<string>('cloudPlannerBaseUrl') || '').trim()) {
         const target = this.cloudOptions();
         const choice = await promptAction.showDialog({ title: '同步采集结果',
           message: '生成画像会将待整理的采集日志、相关历史证据和已有的画像摘要发送至 ' + target.baseUrl + '（' + target.model + '）。结果保存在本机。',
@@ -512,12 +526,12 @@ struct Index {
   }
   private async testCloudService(): Promise<void> {
     try {
-      await this.authorizeCloud(); let options = this.cloudOptions();
-      options.readTimeout = 10000; options.messages = [{ role: 'user', content: 'Connection test. Reply OK.' }];
+      let options = this.cloudOptions(); await this.authorizeCloud();
+      options.logResponseContent = false; options.readTimeout = 10000; options.messages = [{ role: 'user', content: 'Connection test. Reply OK.' }];
       this.cloudOutput = '正在测试配置的服务…';
       let response = await this.client.chatCompletion(options);
       this.cloudOutput = '请求成功，服务返回：' + response.content.slice(0, 500);
-    } catch (error) { this.cloudOutput = '测试未完成：' + (error as Error).message; }
+    } catch (error) { this.cloudOutput = '测试未完成：' + plannerTestFailure((error as Error).message, AppStorage.get<string>('cloudPlannerModel') || ''); }
   }
   private reloadSessions(): void { this.sessions = ChatSessionStorage.loadIndex(this.context().filesDir); }
   private persistChat(): void {
@@ -1063,7 +1077,7 @@ struct Index {
       }
       const deciderUrl = (AppStorage.get<string>('cloudDeciderBaseUrl') || '').trim();
       const deciderModel = (AppStorage.get<string>('cloudDeciderModel') || '').trim();
-      const deciderKey = AppStorage.get<string>('cloudDeciderApiKey') || '';
+      const deciderKey = InstalledModels.key('Decider', deciderUrl, AppStorage.get<string>('cloudDeciderApiKey') || '');
       if (memoryId.length > 0) {
         id = await bridge.callMethod('mikaPhoneStartInConversation', goal, options.baseUrl, options.model || '', options.apiKey || '',
           method, JSON.stringify({ url: deciderUrl, model: deciderModel, key: deciderKey }), memoryId) as string;
@@ -1459,7 +1473,7 @@ struct Index {
   @Builder private MainTabContents() {
         TabContent() { this.Home() }.expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP]).tabBar(NavigationStyle.tabBarStyle(0))
         TabContent() {
-          CollectionPage({ collectionModule: $collectionScene, viewModels: this.collectionViews, refreshing: this.refreshing,
+          CollectionPage({ collectionModule: $collectionScene, floatingGroups: this.floatingGroups, viewModels: this.collectionViews, refreshing: this.refreshing,
             secretaryNote: this.collectionSecretaryNote, navigationBottomInset: this.navigationInset(),
             onRefresh: (): void => { this.refreshCollection(); },
             onOpenDataCollectionSettings: (): void => { this.settingsSection = 1; this.tab = MainTabIndex.Mine; },

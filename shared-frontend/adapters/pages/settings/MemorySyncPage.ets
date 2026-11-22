@@ -1,3 +1,4 @@
+import { InstalledModels, validatePlanner } from '../../platform/InstalledModels';
 import Bridge from '@arkui-x.bridge';
 import { FrostedPage } from '../../components/FrostedPage';
 import { AppHeader } from '../../components/AppHeader';
@@ -28,9 +29,8 @@ struct MemorySyncPage {
   private config(): DataManagerModelConfig {
     let baseUrl = (AppStorage.get<string>('cloudPlannerBaseUrl') || '').trim();
     let model = (AppStorage.get<string>('cloudPlannerModel') || '').trim();
-    if (!baseUrl.startsWith('https://') || model.length === 0) { throw new Error('请先在“模型与智能体”保存 HTTPS 地址和模型名称'); }
-    return { baseUrl: baseUrl, model: model, apiKey: AppStorage.get<string>('cloudPlannerApiKey') ||
-      AppStorage.get<string>('cloudApiKey') || '', enabled: true, ensureActive: (): void => { this.ensureActive(); } };
+    validatePlanner(baseUrl, model);
+    return { baseUrl: baseUrl, model: model, apiKey: InstalledModels.key('Planner', baseUrl, AppStorage.get<string>('cloudPlannerApiKey') || AppStorage.get<string>('cloudApiKey') || ''), enabled: true, ensureActive: (): void => { this.ensureActive(); } };
   }
   private async sync(): Promise<void> {
     if (this.busy || AppStorage.get<boolean>('androidMemorySyncBusy') === true) { return; }

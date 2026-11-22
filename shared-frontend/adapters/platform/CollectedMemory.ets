@@ -1,3 +1,4 @@
+import { InstalledModels } from './InstalledModels';
 import Bridge from '@arkui-x.bridge';
 import { promptAction } from '@kit.ArkUI';
 import { CloudChatCompletionOptions, CloudChatToolDefinition } from '../utils/CloudModelClient';
@@ -48,7 +49,7 @@ export class CollectedMemory {
     AiServiceAccess.requireAllowed(); PrivacyConsent.requireAccepted();
     let url = (AppStorage.get<string>('cloudPlannerBaseUrl') || '').trim();
     let model = (AppStorage.get<string>('cloudPlannerModel') || '').trim();
-    let key = AppStorage.get<string>('cloudPlannerApiKey') || AppStorage.get<string>('cloudApiKey') || '';
+    let key = InstalledModels.key('Planner', url, AppStorage.get<string>('cloudPlannerApiKey') || AppStorage.get<string>('cloudApiKey') || '');
     if (url !== options.baseUrl || model !== options.model || key !== options.apiKey) { throw new Error('聊天模型配置已变化，请重新发送'); }
   }
 

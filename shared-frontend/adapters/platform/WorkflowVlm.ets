@@ -1,3 +1,4 @@
+import { InstalledModels } from './InstalledModels';
 import { promptAction } from '@kit.ArkUI';
 import Bridge from '@arkui-x.bridge';
 import { CloudModelClient, CloudChatCompletionOptions, CloudContentPart } from '../utils/CloudModelClient';
@@ -44,7 +45,7 @@ export class WorkflowVlm {
     }
     let plannerUrl = (AppStorage.get<string>('cloudPlannerBaseUrl') || '').trim();
     let shareKey = baseUrl.startsWith('https://') && baseUrl.split('/').slice(0, 3).join('/') === plannerUrl.split('/').slice(0, 3).join('/');
-    return { baseUrl: baseUrl, model: model, apiKey: AppStorage.get<string>('cloudDeciderApiKey') || (shareKey ? AppStorage.get<string>('cloudApiKey') || '' : ''),
+    return { baseUrl: baseUrl, model: model, apiKey: InstalledModels.key('Decider', baseUrl, AppStorage.get<string>('cloudDeciderApiKey') || (shareKey ? AppStorage.get<string>('cloudApiKey') || '' : '')),
       messages: [], readTimeout: 30000, maxTokens: 2048, logResponseContent: false, chatTemplateKwargs: { enable_thinking: false } };
   }
   private async validatedConfig(): Promise<CloudChatCompletionOptions> {
@@ -56,7 +57,9 @@ export class WorkflowVlm {
     return this.config(allowedHttp);
   }
   async authorizeCollection(request: WorkflowVlmRequest, authorize: () => Promise<void>, cancelled: () => boolean): Promise<string> {
-    const config = await this.prepareGui(authorize);
+    const config = await this.validatedConfig();
+    await authorize();
+    this.requireGuiConfig(config);
     if (cancelled()) { throw new Error('采集已停止'); }
     const choice = await promptAction.showDialog({ title: '这一步需要 Mika 协助',
       message: request.question + (config.baseUrl.startsWith('http://') ? '\n此测试服务使用 HTTP 明文传输截图和凭据。' : '') + '\n模型：' + (config.model || '服务端默认 Decider') + '\n服务：' + config.baseUrl + '\n完成这一步后继续本机工作流。',
@@ -67,7 +70,7 @@ export class WorkflowVlm {
     return JSON.stringify({ url: config.baseUrl, model: config.model, key: config.apiKey || '' });
   }
   async prepareGui(authorize: () => Promise<void>): Promise<CloudChatCompletionOptions> {
-    let config = await this.validatedConfig();
+    let config = this.config();
     await authorize();
     this.requireGuiConfig(config);
     return config;
@@ -144,7 +147,7 @@ export class WorkflowVlm {
       throw new Error('视觉问答需要问题和应用私有图片引用；请先将图片保存到共享应用');
     }
     let imageUri = WorkflowVlm.imageUri(request.image, filesDir, runName);
-    let config = await this.validatedConfig();
+    let config = this.config();
     await authorize(); await ensure();
     let answer = await promptAction.showDialog({ title: '发送图片进行视觉问答？',
       message: '将发送1张图片和以下完整问题至 ' + config.baseUrl + '，模型 ' + (config.model || '服务端默认 Decider') +

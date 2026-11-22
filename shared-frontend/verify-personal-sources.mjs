@@ -9,6 +9,7 @@ let confirm = 0, accepted = true, snapshot = {}, readCount = 0;
 let permissionStates = [], permissionCalls = [];
 const native = fs.readFileSync(new URL('../shared-app/src/main/java/com/clawmate/shared/PlatformBridge.kt', import.meta.url), 'utf8');
 const Sources = runInNewContext(code + '\nPersonalSources;', {
+  validatePlanner: () => {}, InstalledModels: {key: (_role, _url, value) => value},
   Bridge: { createBridge: () => ({ callMethod: async (name, ...args) => {
     const signature = native.match(new RegExp('fun ' + name + '\\(([^)]*)\\)'));
     assert.ok(signature, name); assert.equal(args.length, signature[1].trim() ? signature[1].split(',').length : 0, name + ' bridge arity');

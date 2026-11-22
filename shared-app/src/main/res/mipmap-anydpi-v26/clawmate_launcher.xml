@@ -1,0 +1,7 @@
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@android:color/white" />
+    <foreground>
+        <inset android:drawable="@drawable/clawmate_harmony_logo" android:inset="16.67%" />
+    </foreground>
+    <monochrome android:drawable="@drawable/clawmate_launcher_monochrome" />
+</adaptive-icon>

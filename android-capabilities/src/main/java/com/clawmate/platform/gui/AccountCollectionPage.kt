@@ -69,7 +69,8 @@ internal enum class AccountCollectionPage(val pkg: String, val accountTab: Strin
             var taps = 0
             var profileReached = false
             var returnedFromDetail = false
-            for (attempt in 0 until 10) {
+            val lastAttempt = if (this == XHS && bottom) 17 else 9
+            for (attempt in 0..lastAttempt) {
                 val screen = snapshot()
                 val ocr = if (this == ELE && (attempt > 0 || !bottom)) port.readVisibleText().orEmpty() else emptyList()
                 if (onList(screen, ocr)) return
@@ -104,11 +105,15 @@ internal enum class AccountCollectionPage(val pkg: String, val accountTab: Strin
                             port.tapXY((bounds[0] + bounds[2]) * (fresh.width - 1) / 1998, bounds.midY() * (fresh.height - 1) / 999)
                             taps++
                         }
-                    } else if (attempt == 6 && taps == 0) {
+                    } else if (attempt >= 6 && taps == 0) {
                         val options = screen.elements.filter { it.clickable && !it.secret && !it.editable &&
                             it.name.trim() in navNames && (if (bottom) it.bounds.midY() > 810 else it.name.trim() !in profileNames) }
                             .groupBy { it.name.trim() }.filterValues { it.size == 1 }.values.map { it.single() }
-                        check(options.isNotEmpty()) { "未找到可核验的“$label”入口" }
+                        if (options.isEmpty()) {
+                            check(attempt < lastAttempt) { "未找到可核验的“$label”入口" }
+                            delay(400)
+                            continue
+                        }
                         val chosen = options[choose(label, options, screen)]
                         val fresh = snapshot()
                         val same = fresh.elements.singleOrNull { it.name == chosen.name && it.bounds == chosen.bounds && it.clickable }

@@ -109,6 +109,61 @@ class ChatContextDeviceTest {
         .put("kind", "chat").put("content", text).put("createdAt", 1).put("thinkingContent", "")
         .put("thinkingCollapsed", true).put("trace", JSONArray()).put("collapsed", false)
 
+    /** The caller stages only the authorized HTTPS provider configuration on the isolated experience app. */
+    @Test fun isolatedCloudChatReturnsTheAnswerAcrossReopen() {
+        val context = instrumentation.targetContext
+        val input = File(context.getExternalFilesDir(null), "qa-live-planner.json")
+        org.junit.Assume.assumeTrue("Requires a staged HTTPS provider", input.isFile)
+        require(context.packageName.endsWith(".experience"))
+        val config = JSONObject(input.readText())
+        check(input.delete())
+        val url = java.net.URI(config.getString("base"))
+        require(url.scheme == "https" && url.host != null && url.userInfo == null)
+        val root = File(context.filesDir, "files/chat-sessions")
+        val settings = File(context.filesDir, "preference/shared_frontend_settings")
+        val index = File(root, "session-index.json")
+        val before = listOf(settings, index).associateWith { if (it.exists()) it.readBytes() else null }
+        val id = "qa-live-chat-" + System.currentTimeMillis()
+        val session = File(root, "sessions/$id.json")
+        val now = System.currentTimeMillis()
+        val title = "合成算术验收"
+        try {
+            fun xml(key: String) = android.text.TextUtils.htmlEncode(config.getString(key))
+            settings.writeText("""<?xml version="1.0" encoding="utf-8"?><preferences>
+                <string key="firstLaunchOnboardingVersion">2026-07-core-preview-usage-guide</string>
+                <bool key="androidCloudAccessGranted" value="true"/>
+                <string key="cloudPlannerBaseUrl">${xml("base")}</string><string key="cloudPlannerModel">${xml("model")}</string>
+                <string key="cloudPlannerApiKey">${xml("key")}</string></preferences>""")
+            session.parentFile!!.mkdirs()
+            session.writeText(JSONObject().put("id", id).put("title", title).put("mode", "cloud_agent")
+                .put("createdAt", now).put("updatedAt", now).put("messages", JSONArray()).toString())
+            index.writeText(JSONObject().put("sessions", JSONArray().put(JSONObject().put("id", id)
+                .put("title", title).put("mode", "cloud_agent").put("fileName", "$id.json")
+                .put("createdAt", now).put("updatedAt", now).put("messageCount", 0).put("lastMessagePreview", ""))).toString())
+            fun answered(): Boolean {
+                val array = runCatching { JSONObject(session.readText()).getJSONArray("messages") }.getOrNull() ?: return false
+                return (0 until array.length()).any { i ->
+                    val item = array.getJSONObject(i)
+                    item.optString("role") == "assistant" && !item.optBoolean("streamingActive") &&
+                        Regex("""\b391\b""").containsMatchIn(item.optString("content"))
+                }
+            }
+            ActivityScenario.launch(SharedActivity::class.java).use { scene ->
+                waitClick("聊天")
+                send("Multiply%s17%sby%s23.%sReply%swith%sdigits%sonly.")
+                val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(120)
+                while (!answered() && System.nanoTime() < deadline) Thread.sleep(250)
+                assertTrue("No completed provider answer to the synthetic question", answered())
+                scene.recreate()
+                assertTrue("Completed assistant answer must survive recreation", answered())
+                evidence("liveCloudReply", "Completed HTTPS planner answer 391 to 17 x 23, persisted across activity recreation")
+            }
+        } finally {
+            before.forEach { (file, bytes) -> if (bytes == null) file.delete() else file.writeBytes(bytes) }
+            session.delete()
+        }
+    }
+
     @Test fun actualPageCompressesLocallyPreservesHistoryAndReusesSummaryAfterRecreate() {
         val context = instrumentation.targetContext
         val root = File(context.filesDir, "files/chat-sessions").also { File(it, "sessions").mkdirs() }

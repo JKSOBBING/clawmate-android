@@ -20,6 +20,7 @@ import java.io.FileNotFoundException
 import java.text.DateFormat
 import java.util.Date
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.ensureActive
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
@@ -44,6 +45,7 @@ internal data class GuiCollection(
     val pages: Int = 1,
     val weibo: WeiboSnapshot? = null,
     val summary: String = "",
+    val floating: FloatingExcerpt? = null,
 ) {
     fun previewLines(): List<String> = weibo?.lead?.let {
         listOf("第 1 名 · ${it.title}\n公开内容摘录 · ${it.excerpt}") + lines
@@ -57,7 +59,10 @@ internal data class GuiCollection(
         addView(ScrollView(context).apply {
             addView(TextView(context).apply {
                 setPadding(32, 16, 32, 24)
-                text = lines.joinToString("\n")
+                text = floating?.let {
+                    listOf("摘录", it.content.joinToString("\n"), "无障碍原文", lines.joinToString("\n"),
+                        "本机 OCR 原文 · ${it.ocrStatus}", it.ocrLines.joinToString("\n")).filter(String::isNotBlank).joinToString("\n\n")
+                } ?: lines.joinToString("\n")
             })
         }, FrameLayout.LayoutParams(MATCH_PARENT, maxHeight))
     }
@@ -216,47 +221,30 @@ internal object GuiCollectionHistory {
         check(file.readFully().contentEquals(bytes)) { "采集记录写入校验失败" }
     }
 
-    fun show(activity: Activity) {
-        val records = read(activity)
-        val list = AlertDialog.Builder(activity, com.clawmate.platform.R.style.ClawMateDialog).setTitle("本机采集记录").setNegativeButton("关闭", null)
-        if (records.isEmpty()) {
-            list.setMessage("暂无记录。采集后选择“保存到本机”。")
-        } else {
-            list.setItems(records.map { item ->
-                if (item.summary.isBlank()) item.title() else item.title() + "\n" + item.summary.take(80)
-            }.toTypedArray()) { _, index ->
-                val record = records[index]
-                if (record.weibo != null) {
-                    val style = GuiCollectionStyle(activity)
-                    style.sheet("微博热搜 · ${record.weibo.date}", record.description(), "关闭", "删除记录",
-                        content = style.recordContent(record), secure = true, onNegative = {
-                            style.sheet("删除这批微博热搜？", "从本机历史移除后，模型查询也不会返回这批记录。", "删除", secure = true) {
-                                runCatching { delete(activity, record) }.onFailure {
-                                    android.widget.Toast.makeText(activity, "删除失败，请重试", android.widget.Toast.LENGTH_SHORT).show()
-                                }
-                            }
-                        }) {}
-                    return@setItems
-                }
-                AlertDialog.Builder(activity, com.clawmate.platform.R.style.ClawMateDialog).setTitle(record.title()).setMessage(record.description())
-                    .setView(record.preview(activity)).setNegativeButton("关闭", null)
-                    .setNeutralButton("删除记录") { _, _ ->
-                        AlertDialog.Builder(activity, com.clawmate.platform.R.style.ClawMateDialog).setMessage("删除这条本机采集记录？")
-                            .setNegativeButton("取消", null).setPositiveButton("删除") { _, _ ->
-                                runCatching { delete(activity, record) }.onFailure {
-                                    AlertDialog.Builder(activity, com.clawmate.platform.R.style.ClawMateDialog).setMessage("删除失败，请重新打开采集记录后重试。")
-                                        .setPositiveButton("知道了", null).show()
-                                }
-                            }.show()
-                    }.create().also {
-                        it.window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
-                        it.show()
-                    }
+    private fun showMatchingTasks(activity: Activity, record: GuiCollection) {
+        val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main)
+        scope.launch {
+            val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching { FloatingExcerpts.matches(activity, record.sourcePackage).map { it.first }.distinct() }
             }
+            if (activity.isFinishing || activity.isDestroyed) return@launch
+            val message = result.fold({ tasks -> if (tasks.isEmpty()) "当前没有为这个应用启用采集任务。"
+                else tasks.joinToString("\n") }, { "暂时无法读取任务列表，请重试。" })
+            AlertDialog.Builder(activity, com.clawmate.platform.R.style.ClawMateDialog)
+                .setTitle("${record.sourceLabel} · 相关采集任务").setMessage(message)
+                .setPositiveButton("关闭", null).create().also {
+                    it.window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+                    it.show()
+                }
         }
-        list.create().also {
-            it.window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
-            it.show()
-        }
+    }
+
+    fun show(activity: Activity, scene: Int? = null, pkg: String = "", onDeleted: () -> Unit = {}) {
+        fun records() = read(activity).filter { scene == null || it.floating?.scene == scene && it.sourcePackage == pkg }
+        val group = if (scene == null) null else "${records().firstOrNull()?.sourceLabel ?: "本机"} · 悬浮摘录"
+        GuiCollectionHistoryDialog(activity, group, ::records, { record ->
+            delete(activity, record)
+            onDeleted()
+        }, { record -> showMatchingTasks(activity, record) }).show()
     }
 }

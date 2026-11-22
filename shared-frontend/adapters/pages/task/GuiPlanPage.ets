@@ -1,8 +1,12 @@
 import Bridge from '@arkui-x.bridge';
+import { common } from '@kit.AbilityKit';
+import { util } from '@kit.ArkTS';
+import fs from '@ohos.file.fs';
 import { router } from '@kit.ArkUI';
 import { AppTheme } from '../../utils/AppTheme';
 import { FrostedPage } from '../../components/FrostedPage';
 import { AppHeader } from '../../components/AppHeader';
+interface ScreenshotPoll { v: number; status: string; dataUrl: string; width: number; height: number; }
 interface PageAction { title: string; detail: string; action: () => void; }
 interface ControlState { supported: boolean; connected: boolean; helperAvailable: boolean; }
 @Entry
@@ -13,6 +17,61 @@ struct GuiPlanPage {
   @State connected: boolean = false;
   @State helperAvailable: boolean = false;
   @State busy: boolean = false;
+  @State preview: string = '';
+  @State previewStatus: string = '';
+  @State capturing: boolean = false;
+  private captureId: string = '';
+  private captureGeneration: number = 0;
+
+  private clearPreview(): void {
+    this.captureGeneration++;
+    if (this.captureId) {
+      Bridge.createBridge('ClawMatePlatform').callMethod('guiScreenshotCancel', this.captureId).catch(() => {});
+      this.captureId = '';
+    }
+    if (this.preview) {
+      try { fs.unlinkSync(this.preview.slice(7)); } catch (ignored) {}
+    }
+    this.preview = ''; this.previewStatus = ''; this.capturing = false;
+  }
+  onPageHide(): void { this.clearPreview(); }
+  aboutToDisappear(): void { this.clearPreview(); }
+  private async capture(): Promise<void> {
+    if (this.capturing) { return; }
+    this.clearPreview(); this.capturing = true; let generation = this.captureGeneration;
+    let bridge = Bridge.createBridge('ClawMatePlatform');
+    try {
+      let id = await bridge.callMethod('guiScreenshotStart') as string;
+      if (generation !== this.captureGeneration) { await bridge.callMethod('guiScreenshotCancel', id); return; }
+      this.captureId = id; let deadline = Date.now() + 8000;
+      while (Date.now() < deadline) {
+        let value = JSON.parse(await bridge.callMethod('guiScreenshotPoll', id) as string) as ScreenshotPoll;
+        if (generation !== this.captureGeneration) { return; }
+        if (value.v !== 1) { throw new Error('截图接口版本不兼容'); }
+        if (value.status === 'done') {
+          if (!/^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/.test(value.dataUrl) || value.dataUrl.length > 1400000) { throw new Error('截图数据无效'); }
+          let path = (getContext(this) as common.UIAbilityContext).cacheDir + '/gui-preview-' + String(Date.now()) + '.jpg';
+          let bytes = new util.Base64Helper().decodeSync(value.dataUrl.split(',')[1]);
+          try {
+            let file = fs.openSync(path, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
+            try { fs.writeSync(file.fd, bytes.slice().buffer); } finally { fs.closeSync(file); }
+          } catch (error) { try { fs.unlinkSync(path); } catch (ignored) {} throw error as Error; }
+          this.preview = 'file://' + path;
+          this.previewStatus = '本机预览 · ' + String(value.width) + '×' + String(value.height); return;
+        }
+        if (value.status !== 'running') { throw new Error('截图失败或已失效，请在前台重试'); }
+        await new Promise<void>((resolve): void => { setTimeout(resolve, 80); });
+      }
+      throw new Error('截图超时');
+    } catch (error) { if (generation === this.captureGeneration) { this.previewStatus = (error as Error).message; } }
+    finally {
+      if (generation === this.captureGeneration) {
+        const finishedId = this.captureId;
+        this.captureId = ''; this.capturing = false;
+        if (finishedId) { bridge.callMethod('guiScreenshotCancel', finishedId).catch(() => {}); }
+      }
+    }
+  }
   onPageShow(): void { this.refresh(); }
   aboutToAppear(): void { this.refresh(); }
   private async refresh(): Promise<void> {
@@ -70,6 +129,17 @@ struct GuiPlanPage {
           this.Action({ title: '后台悬浮窗', detail: '管理桌面和其他应用上的悬浮便签', action: () => { this.open('guiFloatingSettings'); } })
           this.Line()
           this.Action({ title: '已采集内容', detail: '查看之前保存在本机的采集记录', action: () => { this.open('guiCollectionHistory'); } })
+        }.width('100%').backgroundColor(AppTheme.background('#FFFFFF')).borderRadius(20)
+        Column() {
+          this.Action({ title: '截取本应用界面', detail: '在本机预览当前页面，离开页面时清除', action: () => { this.capture(); } })
+          if (this.preview.length > 0) {
+            this.Line()
+            this.Action({ title: '清除截图', detail: '删除本次预览', action: () => { this.clearPreview(); } })
+            Image(this.preview).width('100%').height(170).objectFit(ImageFit.Contain).accessibilityText('本机截图预览')
+          }
+          if (this.previewStatus.length > 0) {
+            Text(this.previewStatus).fontSize(13).fontColor(AppTheme.text('#68758B')).width('100%').padding(16)
+          }
         }.width('100%').backgroundColor(AppTheme.background('#FFFFFF')).borderRadius(20)
       }.width('92%').constraintSize({ maxWidth: 720 }).padding({ top: 16, bottom: 40 })
     }.width('100%').height('100%').scrollBar(BarState.Off)

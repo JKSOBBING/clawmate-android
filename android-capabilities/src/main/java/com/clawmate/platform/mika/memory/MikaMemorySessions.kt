@@ -54,11 +54,11 @@ class MikaMemorySessions(private val runtime: MikaMemoryRuntime) {
         result.content.toString()
     }
 
-    suspend fun finish(id: String, url: String, model: String, key: String): Int {
+    suspend fun finish(id: String, url: String, model: String, key: String, plannerOrigin: String = ""): Int {
         val s = sessions.remove(id) ?: return 0
         if (s.turn.memory == null || !runtime.valid(s.turn)) return 0
-        require(url.length <= 2048 && model.length in 1..180 && key.length <= 4096)
-        val endpoint = requireNotNull(MikaEndpoints.parse(url)) { "invalid_model_endpoint" }
+        require(url.length <= 2048 && model.length <= 180 && key.length <= 4096)
+        val endpoint = requireNotNull(MikaEndpoints.planner(url, plannerOrigin)) { "invalid_model_endpoint" }
         val chat = OpenAiCompatModel(endpoint.second, key.ifBlank { null }, model,
             Capabilities(true, false, 64_000, false), http)
         return runtime.finish(s.turn, chat, s.tools.savedChanges)

@@ -25,6 +25,22 @@ class EleOrderFieldsTest {
         assertEquals("12\"比萨", EleOrderFields.productTitle("12\"比萨"))
     }
 
+    @Test fun paymentMustBeOnThePriceDisclosureAndUnambiguous() {
+        val rows = listOf(line("总优惠 ￥8", 538, 450), line("实付", 770, 450),
+            line("￥16.50元", 865, 452), line("实付 ￥9.00", 825, 471))
+        assertEquals("16.50", EleOrderFields.paidOnDisclosure(rows, 450))
+        assertNull(EleOrderFields.paidOnDisclosure(rows.drop(2), 450))
+        assertNull(EleOrderFields.paidOnDisclosure(listOf(line("实付 ￥16", 720, 450), line("实付 ￥12", 860, 451)), 450))
+    }
+
+    @Test fun productQuoteCanOnlyBeRecoveredFromTheSamePrintedWords() {
+        val partial = "组合“香”味-单品“鲜味"
+        val complete = "组合“香”味-单品“鲜”味"
+        assertEquals(complete, EleOrderFields.witnessedQuotes(partial, listOf(complete)))
+        assertEquals(partial, EleOrderFields.witnessedQuotes(partial, listOf("组合“甜”味-单品“鲜”味")))
+        assertEquals(partial, EleOrderFields.witnessedQuotes(partial, emptyList()))
+    }
+
     @Test fun partlyRecognizedDisclosureRequiresTheOrderHeadingCountAndSameRowTotal() {
         val title = line("明细", 44, 499)
         val rows = listOf(title, line("总优惠¥7 实付¥16", 560, 498, 966), line("共1件", 881, 444),

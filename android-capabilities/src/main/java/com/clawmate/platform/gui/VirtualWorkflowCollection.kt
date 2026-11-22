@@ -71,7 +71,7 @@ internal class VirtualWorkflowCollection(private val activity: Activity, private
         if (response == "cancel") throw CollectionDeclined()
         val credentials = JSONObject(response)
         return requireNotNull(MikaVisionConfig.parse(credentials.getString("url"), credentials.getString("model"), credentials.optString("key"),
-            MikaVisionConfig.debugOrigin(activity))) {
+            MikaVisionConfig.workflowHttpOrigin(activity))) {
             "请为本次接管配置 HTTPS 模型"
         }
     }

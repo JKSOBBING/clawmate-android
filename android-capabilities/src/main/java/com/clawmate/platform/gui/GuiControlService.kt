@@ -87,6 +87,7 @@ class GuiControlService : AccessibilityService() {
     private val xhsRun get() = (activeRequest?.task as? GuiControlTask.Xhs)?.run
     private val pageRun get() = (activeRequest?.task as? GuiControlTask.Pages)?.run
     private val mikaRun get() = (activeRequest?.task as? GuiControlTask.Mika)?.run
+    private var foregroundCollection: ForegroundCollectionWindow? = null
     private var backgroundDisplay: BackgroundDisplay? = null
     private var mikaWindowMissingSince: Long? = null
     private var mikaUiEventAt = 0L
@@ -177,8 +178,10 @@ class GuiControlService : AccessibilityService() {
             val window = FloatingNoteWindow(this) {
                 if (quickCapture?.isActive != true) quickCapture = collectionScope.launch {
                     try {
-                        FloatingPageCapture(this@GuiControlService).save(this) { idleWindow != null && connected === this@GuiControlService }
-                        Toast.makeText(this@GuiControlService, "已保存到本机采集记录", Toast.LENGTH_SHORT).show()
+                        val record = FloatingPageCapture(this@GuiControlService).save(this) { idleWindow != null && connected === this@GuiControlService }
+                        val task = record.floating?.tasks?.firstOrNull()
+                        val receipt = "已归档 · ${record.sourceLabel}" + (task?.let { " · 相关任务：$it" } ?: "")
+                        Toast.makeText(this@GuiControlService, receipt, Toast.LENGTH_LONG).show()
                     } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
                     catch (error: Exception) { Toast.makeText(this@GuiControlService, error.message ?: "采集失败", Toast.LENGTH_SHORT).show() }
                 }
@@ -196,6 +199,7 @@ class GuiControlService : AccessibilityService() {
 
     override fun onServiceConnected() {
         connected = this
+        if (Build.VERSION.SDK_INT >= 34) ForegroundCollectionWindow.removeOrphans(this)
         lastStatus = "服务已连接，等待选择应用"
         if (!observingLock && Build.VERSION.SDK_INT >= 34) {
             val filter = android.content.IntentFilter(Intent.ACTION_SCREEN_OFF).apply { addAction(Intent.ACTION_USER_PRESENT); addAction(Intent.ACTION_SCREEN_ON) }
@@ -351,7 +355,19 @@ class GuiControlService : AccessibilityService() {
             weiboRun?.let { it.begin(it.steps.first(), checkNotNull(backgroundDisplay).id) }
             armedUntil = now + if (collectOnly || mikaRun != null) 20_000 else 5_000
             lastStatus = if (useBackground) "等待后台屏打开：$targetLabel" else "等待目标应用进入前台：$targetLabel"
-            if (!useBackground) startActivity(Intent(request.launch).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            if (!useBackground) {
+                val isCollection = when (val task = request.task) {
+                    is GuiControlTask.ManualControl -> false
+                    is GuiControlTask.Mika -> task.run.workflow?.collection != null
+                    else -> true
+                }
+                if (isCollection) {
+                    ForegroundCollectionWindow(this, request.launch).let { window ->
+                        foregroundCollection = window
+                        window.open()
+                    }
+                } else startActivity(Intent(request.launch).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            }
             handler.post(watchdog)
         } catch (failure: Exception) {
             stopSession(request, failure.message ?: "无法打开目标应用")
@@ -392,6 +408,8 @@ class GuiControlService : AccessibilityService() {
         val interruptedPages = pageRun
         val interruptedMika = mikaRun
         val target = activeRequest?.target
+        foregroundCollection?.close()
+        foregroundCollection = null
         activeRequest = null
         pendingStart = null
         backgroundDisplay?.let { display ->
@@ -1205,7 +1223,12 @@ class GuiControlService : AccessibilityService() {
         val reader = withContext(Dispatchers.IO) { runCatching { WeiboRankReader() }.getOrNull() }
             ?: return boardId to null
         val title = try {
-            readStableWeiboPage(boardId, bounds, area, reader, tabLabel)?.second?.singleOrNull { it.rank == 1 }?.title
+            var first = readStableWeiboPage(boardId, bounds, area, reader, tabLabel)?.second?.singleOrNull { it.rank == 1 }
+            if (first == null) {
+                delay(400)
+                first = readStableWeiboPage(boardId, bounds, area, reader, tabLabel)?.second?.singleOrNull { it.rank == 1 }
+            }
+            first?.title
         } finally { reader.close() }
         if (title == null) return boardId to null
         val root = collectionWindow(boardId, bounds).root ?: return boardId to null
@@ -1408,6 +1431,8 @@ class GuiControlService : AccessibilityService() {
                         val message = if (saved) "已保存 ${record.lines.size} 条文字到本机采集记录" else "已取消预览，未保存采集内容"
                         run.finish(if (saved) RunStatus.SUCCESS else RunStatus.CANCELLED, message)
                         stop(message)
+                    } else if (saved && turn == epoch) {
+                        stop("已保存到本机采集记录：$label")
                     }
                 }
             } catch (_: TimeoutCancellationException) {

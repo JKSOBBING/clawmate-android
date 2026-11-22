@@ -75,6 +75,7 @@ private class DisplayHost(
     private var frames: ImageReader? = null
     private var streamSurface: Surface? = null
     private var launchIntent: Intent? = null
+    private var tasks: DisplayCollectionTasks? = null
     private val expiry = Runnable { release() }
 
     @Synchronized
@@ -123,7 +124,7 @@ private class DisplayHost(
         check(resolved.packageName == pkg)
         launch.component = resolved
         // Isolate both launcher and deep-link starts from the user's warm task.
-        launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_MULTIPLE_TASK)
+        launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_MULTIPLE_TASK or Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS)
 
         // These AOSP flags require the shell's trusted-display permission.
         val trusted = 1 shl 10
@@ -149,7 +150,9 @@ private class DisplayHost(
             display = surface
             handler.postDelayed(expiry, 630_000)
             val id = surface.display.displayId
+            tasks = DisplayCollectionTasks(shell, pkg, id)
             launchOnDisplay(launch, id)
+            tasks?.awaitLauncherRedirect(launch.component)
             launchIntent = Intent(launch)
             return id
         } catch (failure: Exception) {
@@ -199,11 +202,10 @@ private class DisplayHost(
         enforceOwner()
         val launch = launchIntent ?: return false
         if (display?.display?.displayId != displayId || launch.component?.packageName != packageName) return false
-        val stop = ProcessBuilder("/system/bin/am", "force-stop", packageName).redirectErrorStream(true).start()
-        try {
-            if (!stop.waitFor(6, TimeUnit.SECONDS) || stop.exitValue() != 0) return false
-        } finally { stop.destroy() }
+        val sessionTasks = tasks ?: return false
+        sessionTasks.closeWindows()
         launchOnDisplay(Intent(launch), displayId)
+        sessionTasks.awaitLauncherRedirect(launch.component)
         return true
     }
 
@@ -231,6 +233,11 @@ private class DisplayHost(
     @Synchronized
     fun release() {
         handler.removeCallbacks(expiry)
+        try {
+            tasks?.closeWindows()
+        } catch (failure: Exception) {
+            android.util.Log.w("ClawMateDisplay", "Task cleanup unavailable; releasing destroy-on-removal display", failure)
+        } finally { tasks = null }
         display?.release()
         display = null
         launchIntent = null

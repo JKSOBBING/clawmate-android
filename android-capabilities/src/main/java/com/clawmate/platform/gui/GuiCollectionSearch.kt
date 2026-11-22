@@ -59,7 +59,7 @@ object GuiCollectionSearch {
                 if (newestWeiboSeen) continue
                 newestWeiboSeen = true
             }
-            val topics = record.weibo?.entries ?: record.lines.map { WeiboTopic(it) }
+            val topics = record.weibo?.entries ?: (record.lines + record.floating?.ocrLines.orEmpty()).distinct().map { WeiboTopic(it) }
             for (topic in topics) {
                 if (rank > 0 && topic.rank != rank || keyword.isNotEmpty() &&
                     !topic.title.contains(keyword, ignoreCase = true) && !record.sourceLabel.contains(keyword, ignoreCase = true)) continue

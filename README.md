@@ -4,7 +4,7 @@ ClawMate 可以把手机上的资料整理成本地记录，在首页查看提�
 
 ## 中文
 
-在 Android 8.0 及以上的 ARM64 手机上，可以直接安装这个测试版。安装包使用 ClawMate 内部测试签名。[下载 v1.1.0-rc.1 测试 APK](https://github.com/JKSOBBING/clawmate-android/releases/download/v1.1.0-rc.1/ClawMate-v1.1.0-rc.1-arm64-v8a-test.apk) · [版本说明](https://github.com/JKSOBBING/clawmate-android/releases/tag/v1.1.0-rc.1)
+体验版面向 Android 8.0 及以上的 ARM64 手机，可与已有的正式版和测试版并存。安装文件与各版本的真机验收范围见 [GitHub Releases](https://github.com/JKSOBBING/clawmate-android/releases)。
 
 ### 使用入口
 
@@ -17,14 +17,14 @@ ClawMate 可以把手机上的资料整理成本地记录，在首页查看提�
 
 安卓宿主在 `shared-app/`，ArkUI-X 界面与平台适配在 `shared-frontend/`。安卓原生能力在 `android-capabilities/`，本地推理接口在 `mobiinfer/`，第三方源码和随附许可在 `third_party/`。
 
-当前候选版本为 `1.1.0-rc.1`。Release 包名为 `com.clawmate.app`，Debug 包名为 `com.clawmate.shared`。仓库包含会议 SDK、Python 后端及 ARM64 运行库。装好工具链后即可从本仓库构建完整 APK，脚本会下载并校验固定版本的公共前端输入。[前端与 APK 构建](shared-frontend/README.md) · [会议 SDK 接入](docs/MEETING_INTEGRATION.md)
+独立体验版为 `1.1.0-beta.3`，包名为 `com.clawmate.experience`。常规Release 包名为 `com.clawmate.app`，Debug 包名为 `com.clawmate.shared`。仓库包含会议 SDK、Python 后端及 ARM64 运行库。装好工具链后即可从本仓库构建完整 APK，脚本会下载并校验固定版本的公共前端输入。[前端与 APK 构建](shared-frontend/README.md) · [会议 SDK 接入](docs/MEETING_INTEGRATION.md)
 
 开发时，真机截图、采集导出、测试报告和临时配置可以放在 Git 忽略的 `local-only/`。构建工具会将生成工程和 APK 写入各自的忽略目录。
 
 
 ## English
 
-The test APK runs on ARM64 phones with Android 8.0 or later and is signed with the ClawMate internal QA certificate. [Download the v1.1.0-rc.1 test APK](https://github.com/JKSOBBING/clawmate-android/releases/download/v1.1.0-rc.1/ClawMate-v1.1.0-rc.1-arm64-v8a-test.apk) · [Release notes](https://github.com/JKSOBBING/clawmate-android/releases/tag/v1.1.0-rc.1)
+The experience edition runs on ARM64 phones with Android 8.0 or later and can be installed alongside the production and test editions. See [GitHub Releases](https://github.com/JKSOBBING/clawmate-android/releases) for available APKs and device validation notes.
 
 ClawMate turns information from your Android phone into local records, shows reminders on the home screen, and connects to a model service or desktop Codex instance you configure.
 
@@ -35,6 +35,6 @@ ClawMate turns information from your Android phone into local records, shows rem
 
 The Android host lives in `shared-app/`, the ArkUI-X frontend and adapters in `shared-frontend/`, native Android capabilities in `android-capabilities/`, and local inference in `mobiinfer/`. The meeting SDK, its Python backend, and its ARM64 runtime are in `meeting/`. Other vendored sources and notices are under `third_party/`.
 
-The release candidate is `1.1.0-rc.1`. Release builds use `com.clawmate.app` and debug builds use `com.clawmate.shared`. With the toolchain installed, the build script fetches and verifies the pinned public frontend inputs and produces a complete APK from this repository. [Build the APK](shared-frontend/README.md) · [Meeting SDK](docs/MEETING_INTEGRATION.md)
+The independent experience edition is `1.1.0-beta.3` (`com.clawmate.experience`). Standard release builds use `com.clawmate.app` and debug builds use `com.clawmate.shared`. With the toolchain installed, the build script fetches and verifies the pinned public frontend inputs and produces a complete APK from this repository. [Build the APK](shared-frontend/README.md) · [Meeting SDK](docs/MEETING_INTEGRATION.md)
 
 Keep device screenshots, personal exports, reports, and temporary configuration in the ignored `local-only/` directory. Generated projects and APKs also go to ignored directories.

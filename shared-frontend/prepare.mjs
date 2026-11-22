@@ -391,6 +391,9 @@ let debug = applyPatches(read('utils/DebugSettings.ets'), [
 ]);
 overlay('utils/DebugSettings.ets', debug);
 let settings = applyPatches(read('pages/settings/SettingsCenterPage.ets'), [
+  ["import { AppTheme }", "import { InstalledModels } from '../../platform/InstalledModels';\nimport { AppTheme }"],
+  ["placeholder: 'Planner 服务密钥'", "defaultPreviewText: InstalledModels.key('Planner', this.cloudPlannerBaseUrl) ? '已使用体验版默认凭据' : '未配置', placeholder: 'Planner 服务密钥'"],
+  ["placeholder: 'Decider 服务密钥'", "defaultPreviewText: InstalledModels.key('Decider', this.cloudDeciderBaseUrl) ? '已使用体验版默认凭据' : '未配置', placeholder: 'Decider 服务密钥'"],
   ['        this.DebugSwitch()', `        this.DebugSwitch()
         SettingsListDivider()
         FloatingNotesSwitch()`],
@@ -470,7 +473,7 @@ let controls = read('pages/settings/SettingsCenterControls.ets');
 controls = "import { SettingsStore } from '../../platform/SettingsStore';\n" + replaceChecked(controls, 'this.onValueChange(value);', 'this.onValueChange(value); SettingsStore.scheduleSave();', { all: true });
 controls = replaceChecked(controls, 'this.getUIContext().getFocusController().requestFocus(', 'focusControl.requestFocus(');
 controls = replaceChecked(controls, '  private previewText(): string {',
-  "  private previewText(): string {\n    if (this.value.trim().length === 0 && this.defaultValue.trim().length === 0) { return '未配置'; }");
+  "  private previewText(): string {\n    if (this.value.trim().length === 0 && this.defaultValue.trim().length === 0) { return this.defaultPreviewText === '默认' ? '未配置' : this.defaultPreviewText; }");
 overlay('pages/settings/SettingsCenterControls.ets', controls);
 overlay('pages/codex/CodexChatTargetPicker.ets', applyPatches(read('pages/codex/CodexChatTargetPicker.ets'), [
   [/^import /, "import { SettingsStore } from '../../platform/SettingsStore';\nimport "],
@@ -485,7 +488,7 @@ let start = privacy.indexOf('export const PRIVACY_DECLARATION: string =');
 let end = privacy.indexOf('// Native ArkUI alert dialog', start);
 if (start < 0 || end < 0) throw new Error('Privacy declaration boundary changed');
 privacy = privacy.slice(0, start) + 'export const PRIVACY_DECLARATION: string = ' + JSON.stringify(
-  '聊天、配置和索引保存在此应用的本地存储。仅在你主动使用云端功能并同意后，相关输入和上下文才会发送至你配置的模型服务。\n\n' +
+  '聊天、配置和索引保存在此应用的本地存储。仅在你主动使用云端功能并同意后，相关输入和上下文才会发送至所选模型服务。体验版内置的鸿蒙 Planner 和 Decider 使用 HTTP 明文传输请求内容和服务凭据。可在“我的 → 模型与智能体”改用 HTTPS 服务。\n\n' +
   '服务提供方的数据保留规则由该服务决定，本应用无法保证其删除或不留存。不要向不信任的服务发送隐私信息。\n\n' +
   'Android 版暂未接入华为账号和小艺读取个人记忆。\n\n' +
   '拒绝后仍可浏览和编辑本地内容。可在“我的 → 个人与隐私 → 隐私政策”撤回云端处理授权。应用将停止新的云端请求，并尝试取消进行中的请求。已发送的数据无法收回。相册和麦克风权限会在使用对应功能时另行申请。\n\n') +
@@ -512,6 +515,30 @@ let collectionSources = applyPatches(read('pages/collection/CollectionPage.ets')
 collectionSources = applyPatches(collectionSources, [
   ['  onOpenMeeting: () => void = () => {};', '  onOpenMeeting: () => void = () => {};\n  onOpenLocalCaptures: () => void = () => {};'],
   ["'#AC425F', this.onOpenMeeting)", "'#AC425F', this.onOpenMeeting)\n      Divider().vertical(true).height(26).strokeWidth(0.5).color($r('app.color.ui_border'))\n      this.AnalysisShortcut('本机采集', $r('app.media.settings_collection'), '#5266AE', '#4658A0', this.onOpenLocalCaptures)"]
+]);
+collectionSources = applyPatches(collectionSources, [
+  ["import { PersonalSourceEntry }", "import { FloatingArchive } from '../../platform/FloatingArchive';\nimport { PersonalSourceEntry }"],
+  ['  @Prop viewModels:', '  @Prop floatingGroups: CollectionGroupViewModel[] = [];\n  @Prop viewModels:'],
+  ['  private groupCount(): number {', `  private domainGroups(): CollectionGroupViewModel[] {
+    return this.floatingGroups.filter((group: CollectionGroupViewModel): boolean =>
+      group.domain === String(this.collectionModule)).concat(this.currentView().groups);
+  }
+
+  private groupCount(): number {`],
+  ['return this.currentView().groups.length;', 'return this.domainGroups().length;'],
+  ["this.currentView().countLabel + '记录 · '", "this.domainRecordCount() + ' 条记录 · '"],
+  ['  private setGroupPage(index: number): void {', `  private domainRecordCount(): number {
+    let count = parseInt(this.currentView().countLabel, 10) || 0;
+    for (let group of this.floatingGroups) {
+      if (group.domain === String(this.collectionModule)) { count += group.eventCount; }
+    }
+    return count;
+  }
+
+  private setGroupPage(index: number): void {`],
+  ['return this.currentView().groups.slice(', 'return this.domainGroups().slice('],
+  ['        const params: CollectionGroupRouteParams', `        if (group.id.startsWith('floating:')) { FloatingArchive.open(this.collectionModule, group.id.slice(9)); return; }
+        const params: CollectionGroupRouteParams`]
 ]);
 overlay('pages/collection/CollectionPage.ets', collectionSources);
 overlay('components/CollectionFormControls.ets', applyPatches(read('components/CollectionFormControls.ets'), [
@@ -801,9 +828,25 @@ console.log(JSON.stringify({ product: 'com.clawmate.shared', project, sourceComm
 
 // Some API-20 Android transports do not settle the request Promise on destroy.
 // Non-streaming memory/home requests need the same explicit cancellation as SSE.
+const diagnosticsFile = path.join(project, 'entry/src/main/ets/utils/CloudHttpDiagnostics.ets');
+fs.writeFileSync(diagnosticsFile, replaceChecked(fs.readFileSync(diagnosticsFile, 'utf8'),
+  '  const text = responseText.toLowerCase();',
+  "  const text = responseText.toLowerCase();\n  if (/model.{0,50}(required|must be a nonempty string|must not be empty)|missing.{0,16}model/.test(text)) { return 'model_required'; }"));
 const cloudFile = path.join(project, 'entry/src/main/ets/utils/CloudModelClient.ets');
 let cloud = fs.readFileSync(cloudFile, 'utf8');
 cloud = applyPatches(cloud, [
+  [/^import /, "import { InstalledModels } from '../platform/InstalledModels';\nimport { PlannerReply } from '../platform/UpstreamPlanner';\nimport "],
+  ['    return plannerApiKey.trim();', "    return InstalledModels.key('Planner', config.plannerBaseUrl, plannerApiKey.trim());"],
+  ['    return deciderApiKey.trim();', "    return InstalledModels.key('Decider', config.deciderBaseUrl, deciderApiKey.trim());"],
+  [`    let httpReq = PrivacyConsent.createHttp();
+    this.registerActiveRequest(httpReq);
+    let url = this.normalizeChatUrl(options.baseUrl);`, `    let url = this.normalizeChatUrl(options.baseUrl);
+    let httpReq = PrivacyConsent.createHttp();
+    this.registerActiveRequest(httpReq);`, { all: true, expected: 2 }],
+  ['    return normalizeCloudChatUrl(baseUrl);', `    if (!baseUrl.trim().startsWith('https://') && !InstalledModels.isPlannerService(baseUrl)) { throw new Error('请使用内置 Planner 或 HTTPS 模型地址'); }
+    return normalizeCloudChatUrl(baseUrl);`],
+  ['  private normalizeEmbeddingUrl(baseUrl: string): string {', `  private normalizeEmbeddingUrl(baseUrl: string): string {
+    if (!baseUrl.trim().startsWith('https://')) { throw new Error('向量模型服务需要 HTTPS 地址'); }`],
   ['  async chatCompletion(options: CloudChatCompletionOptions)', `  private requestCancellable(request: http.HttpRequest, url: string, options: http.HttpRequestOptions,
     timeout: number): Promise<http.HttpResponse> {
     return new Promise<http.HttpResponse>((resolve, reject) => {
@@ -825,7 +868,35 @@ cloud = applyPatches(cloud, [
   }
 
   async chatCompletion(options: CloudChatCompletionOptions)`],
-  ['let response = await httpReq.request(url, requestOptions);', 'let response = await this.requestCancellable(httpReq, url, requestOptions, Math.min(120000, options.readTimeout || 60000) + 10000);']
+  ['let response = await httpReq.request(url, requestOptions);', `let response: http.HttpResponse | PlannerReply;
+      const timeout = Math.min(120000, options.readTimeout || 60000) + 10000;
+      const call = InstalledModels.openPlanner(options.baseUrl);
+      if (call !== null) {
+        this.streamCancellers.set(httpReq, (): void => { call.cancel(); });
+        PrivacyConsent.onHttpCancel(httpReq, (): void => { call.cancel(); });
+        response = await call.complete(url, options.apiKey, requestOptions.extraData as string, timeout);
+      } else {
+        response = await this.requestCancellable(httpReq, url, requestOptions, timeout);
+      }`],
+  ['      let cleanup = (): void => {\n        httpReq.off', '      const nativePlanner = InstalledModels.openPlanner(options.baseUrl);\n      let cleanup = (): void => {\n        nativePlanner?.cancel();\n        httpReq.off'],
+  ["      httpReq.on('dataReceive', (data: ArrayBuffer) => {", '      const receive = (data: ArrayBuffer): void => {'],
+  ["      });\n      httpReq.on('dataEnd', () => {\n        textBuffer", "      };\n      const endData = (): void => {\n        textBuffer"],
+  [`      });
+      reportProgress('waiting');
+      httpReq.requestInStream(this.normalizeChatUrl(options.baseUrl), requestOptions).then((code: number) => {`, `      };
+      reportProgress('waiting');
+      let status: Promise<number>;
+      if (nativePlanner !== null) {
+        status = nativePlanner.read(url, options.apiKey, requestOptions.extraData as string,
+          Math.min(120000, options.readTimeout || 60000) + 10000, receive).then((code: number): number => {
+          endData(); return code;
+        });
+      } else {
+        httpReq.on('dataReceive', receive);
+        httpReq.on('dataEnd', endData);
+        status = httpReq.requestInStream(url, requestOptions);
+      }
+      status.then((code: number) => {`]
 ]);
 fs.writeFileSync(cloudFile, cloud);
 styleFrontendDialogs(path.join(project, 'entry/src/main/ets'));

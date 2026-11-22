@@ -9,7 +9,7 @@ const source=stripTypeScriptTypes((prompts+'\n'+text.replace(/^import\s+[^;]+;\s
 let allowed=true,active=true,configuration=new Map([['cloudDeciderBaseUrl','https://fixture.invalid/v1'],['cloudDeciderModel','fixture-model'],['cloudDeciderApiKey','synthetic']]);
 let nativeReady=true;
 let call,reply='{"reasoning":"A visible button","action":"click","parameters":{"bbox":[10,20,50,60]}}',after=()=>{};
-const context={Bridge:{createBridge:()=>({callMethod:async()=>nativeReady})},AppStorage:{get:key=>configuration.get(key)},AiServiceAccess:{requireAllowed(){assert.ok(allowed,'revoked')}},PrivacyConsent:{requireAccepted(){assert.ok(allowed,'revoked')}},setInterval,clearInterval,
+const context={InstalledModels:{key:(_role,_url,value)=>value},Bridge:{createBridge:()=>({callMethod:async()=>nativeReady})},AppStorage:{get:key=>configuration.get(key)},AiServiceAccess:{requireAllowed(){assert.ok(allowed,'revoked')}},PrivacyConsent:{requireAccepted(){assert.ok(allowed,'revoked')}},setInterval,clearInterval,
  CloudModelClient:class{cancelActiveRequests(){} async chatCompletionText(value){call=value;after();return reply}}};
 const {GuiPlan,parseGuiProposal}=runInNewContext(source+'\n({GuiPlan,parseGuiProposal});',context);
 let passed=0; const check=async(name,fn)=>{await fn();passed++;console.log('PASS '+name)};

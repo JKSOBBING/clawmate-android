@@ -106,10 +106,10 @@ class GuiScreenshotDeviceTest {
             await("Settings navigation missing"){click("我的")}
             DevicePageControls.open("数据采集")
             DevicePageControls.open("界面采集与规划")
-            await("Own screenshot button missing"){click("截取本应用界面")}
+            DevicePageControls.open("截取本应用界面")
             await("No preview file from actual page"){(previews().toSet()-before).isNotEmpty()}
             val image=(previews().toSet()-before).single();assertTrue(image.length()>1000)
-            await("Clear preview control missing"){click("清除截图")}
+            DevicePageControls.open("清除截图")
             await("Preview cache survived clear"){!image.exists()}
             instrumentation.sendStatus(2,Bundle().apply{putString("guiPreviewPage","Actual settings entry and ArkTS capture/preview/private file/clear; cloud authorization false, no provider request or execution")})
         }finally{(previews().toSet()-before).forEach{it.delete()}}

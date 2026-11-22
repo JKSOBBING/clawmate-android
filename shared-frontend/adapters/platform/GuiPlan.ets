@@ -1,3 +1,4 @@
+import { InstalledModels } from './InstalledModels';
 import { CloudModelClient, CloudChatCompletionOptions } from '../utils/CloudModelClient';
 import { CLOUD_DECIDER_SYSTEM_PROMPT, CLOUD_DECIDER_USER_PROMPT, CLOUD_DECIDER_CURRENT_STEP_PROMPT } from '../utils/CloudDeciderPrompt';
 import { AiServiceAccess } from '../utils/AiServiceAccess';
@@ -48,7 +49,7 @@ export class GuiPlan {
     if (!/^https:\/\/[^/?#@\s]+(?:\/[^?#\s]*)?$/.test(baseUrl) || model.length > 180) { throw new Error('请配置有效的 HTTPS Decider 地址；模型名可留空'); }
     let plannerUrl = (AppStorage.get<string>('cloudPlannerBaseUrl') || '').trim();
     let shareKey = baseUrl.split('/').slice(0, 3).join('/') === plannerUrl.split('/').slice(0, 3).join('/');
-    return { baseUrl: baseUrl, model: model, apiKey: AppStorage.get<string>('cloudDeciderApiKey') || (shareKey ? AppStorage.get<string>('cloudApiKey') || '' : ''), messages: [], readTimeout: 30000, maxTokens: 2048, logResponseContent: false, chatTemplateKwargs: { enable_thinking: false } };
+    return { baseUrl: baseUrl, model: model, apiKey: InstalledModels.key('Decider', baseUrl, AppStorage.get<string>('cloudDeciderApiKey') || (shareKey ? AppStorage.get<string>('cloudApiKey') || '' : '')), messages: [], readTimeout: 30000, maxTokens: 2048, logResponseContent: false, chatTemplateKwargs: { enable_thinking: false } };
   }
   async plan(task: string, image: string, width: number, height: number, config: CloudChatCompletionOptions, active: () => boolean): Promise<GuiProposal> {
     let invalidated = false;

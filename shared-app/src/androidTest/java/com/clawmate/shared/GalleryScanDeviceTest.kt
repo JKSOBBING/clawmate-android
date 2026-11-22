@@ -65,7 +65,8 @@ class GalleryScanDeviceTest {
     private fun awaitState(test: (JSONObject)->Boolean): JSONObject {
         val deadline=SystemClock.elapsedRealtime()+45000
         while(SystemClock.elapsedRealtime()<deadline){val value=runCatching{JSONObject(checkpoint.readText())}.getOrNull();if(value!=null&&test(value))return value;Thread.sleep(100)}
-        error("Gallery checkpoint did not reach expected state")
+        val last = runCatching { JSONObject(checkpoint.readText()) }.getOrNull()
+        error("Gallery checkpoint did not reach expected state: ${last?.optString("status")}, processed=${last?.optInt("processed")}, failed=${last?.optInt("failed")}")
     }
     private fun setup() {
         check(!backup.exists()){"Recover previous gallery scan backup before rerun"}
@@ -77,7 +78,7 @@ class GalleryScanDeviceTest {
         val settings=originals()[0];settings.parentFile!!.mkdirs()
         settings.writeText("""<?xml version="1.0" encoding="utf-8"?><preferences>
           <string key="firstLaunchOnboardingVersion">2026-07-core-preview-usage-guide</string><bool key="androidCloudAccessGranted" value="true"/>
-          <string key="galleryApiBaseUrl">https://gallery-scan-fixture.invalid</string><string key="galleryApiKey"></string><string key="galleryModel">synthetic-unavailable-model</string>
+          <string key="galleryApiBaseUrl">https://127.0.0.1:1</string><string key="galleryApiKey"></string><string key="galleryModel">synthetic-unavailable-model</string>
           <string key="gallerySkipOcr">false</string><string key="galleryUseOcrKeywordFilter">false</string><string key="galleryOcrConcurrency">1</string>
           <string key="galleryModelConcurrency">1</string><string key="galleryEmbeddingConcurrency">1</string><string key="galleryParallelFieldRequests">false</string>
           <string key="galleryEmbeddingMode">huawei_local</string><string key="galleryAmapWebKey"></string></preferences>""")
@@ -150,7 +151,7 @@ class GalleryScanDeviceTest {
                 val failed=awaitState{it.optString("status")=="paused"&&it.optInt("failed")==8}
                 assertEquals(1,failed.getInt("processed"));assertEquals(9,failed.getInt("total"));assertCompletedUnchanged()
                 assertFalse(failed.toString().contains("\"status\":\"completed\""))
-                evidence("galleryProcessRestart","New app process resumed only unfinished items; actual .invalid provider failures remain retriable, prior completion unchanged, no fake completion")
+                evidence("galleryProcessRestart","New app process resumed only unfinished items; unavailable loopback provider failures remain retriable, prior completion unchanged, no fake completion")
             }
         }finally{Thread.sleep(500);cleanup()}
     }

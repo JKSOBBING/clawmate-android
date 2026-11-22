@@ -45,6 +45,7 @@ class GuiControlDeviceTest {
             fun allowed(root:AccessibilityNodeInfo?)=root?.packageName?.toString() in fixturePackages
             val root=ui.rootInActiveWindow
             val node=(if(allowed(root))find(root,text,exact)else null) ?: ui.windows.firstNotNullOfOrNull{val candidate=it.root;if(allowed(candidate))find(candidate,text,exact)else null} ?: return@await false
+            if (node.isClickable && node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return@await true
             val rect=Rect().also{node.getBoundsInScreen(it)};tap(rect.exactCenterX(),rect.exactCenterY());true
         }
     }

@@ -146,6 +146,26 @@ class MeetingIntegrationDeviceTest {
 
     @Test fun sharedPageUsesSdkAndImportsOneImmutablePublicRecord() {
         val context = instrumentation.targetContext
+        if (InstrumentationRegistry.getArguments().getString("stagePublicMeetingModels") == "true") {
+            val source = File(requireNotNull(context.getExternalFilesDir(null)), "meeting-qa-models")
+            val target = File(context.filesDir, "meeting/models")
+            val required = listOf(
+                "sensevoice/model.int8.onnx", "sensevoice/tokens.txt", "sensevoice/test_wavs/zh.wav",
+                "campplus.onnx", "silero_vad.onnx", "qwen.gguf",
+                "sherpa-onnx-pyannote-segmentation-3-0/model.onnx",
+                "sherpa-onnx-pyannote-segmentation-3-0/model.int8.onnx",
+                "streaming/decoder.int8.onnx", "streaming/encoder.int8.onnx", "streaming/tokens.txt",
+            )
+            for (name in required) {
+                val input = File(source, name)
+                val output = File(target, name)
+                require(input.isFile && input.length() > 0) { "Missing public fixture: $name" }
+                if (!output.exists()) {
+                    output.parentFile!!.mkdirs()
+                    input.copyTo(output)
+                }
+            }
+        }
         val fixture = File(context.filesDir, "meeting/models/sensevoice/test_wavs/zh.wav")
         assertTrue("Prepare public model fixture before running device check", fixture.isFile)
         var mid = ""
@@ -156,7 +176,7 @@ class MeetingIntegrationDeviceTest {
                 bridge = field.get(activity) as PlatformBridge
             }
             // Some ColorOS versions expose a blank virtual tree for the main tab bar.
-            // Enter its second tab and the right-hand recording shortcut via the real touch surface.
+            // Enter its second tab and the recording shortcut via the real touch surface.
             val screen = instrumentation.uiAutomation.takeScreenshot() ?: error("Screen unavailable")
             val width = screen.width
             val height = screen.height
@@ -167,7 +187,7 @@ class MeetingIntegrationDeviceTest {
             }
             if (!DeviceTestTimeouts.clickNavigation("汇总") && !clickRenderedText("汇总")) touchScreen(.28f, .92f)
             Thread.sleep(700)
-            if (!clickText("录音分析")) touchScreen(.76f, .35f)
+            if (!clickText("录音分析")) DevicePageControls.open("录音分析")
             evidence("meetingTimeoutMultiplier", timeoutMultiplier.toString())
             val engineDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(90L * timeoutMultiplier)
             do {

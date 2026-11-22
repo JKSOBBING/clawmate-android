@@ -95,14 +95,14 @@ internal object WeiboGuiWorkflow {
 
     @RequiresApi(34)
     fun topStory(root: AccessibilityNodeInfo, area: Rect, title: String): WeiboLead? {
-        val body = sequenceOf("contentTextView", "tv_standpoint").flatMap { id ->
+        return sequenceOf("contentTextView", "blogMaxLineTextView", "tv_standpoint").flatMap { id ->
             root.findAccessibilityNodeInfosByViewId("$PACKAGE:id/$id").asSequence()
         }.filter { readable(it, area) }
             .flatMap { sequenceOf(it.text, it.contentDescription) }
             .filterNotNull().map { it.toString().trim() }
-            .firstOrNull { it.contains(title) } ?: return null
-        val excerpt = body.replace(Regex("\\s+"), " ").take(260)
-        return if (excerpt.replace(title, "").trim('#', ' ').length >= 12) WeiboLead(title, excerpt) else null
+            .map { it.replace(Regex("\\s+"), " ").take(260) }
+            .firstOrNull { it.contains(title) && it.replace(title, "").trim('#', ' ').length >= 12 }
+            ?.let { WeiboLead(title, it) }
     }
 
     @RequiresApi(34)

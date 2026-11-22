@@ -44,6 +44,13 @@ import kotlinx.coroutines.runBlocking
 class PlatformBridge(private val activity: StageActivity) :
     BridgePlugin(activity, "ClawMatePlatform", activity.bridgeManager), Closeable {
     fun legacyImportStatus(): String = LegacyDataImport.status(activity.applicationContext)
+    private val modelProfile by lazy { com.clawmate.platform.mika.MikaEndpoints.experienceProfile(activity) }
+    fun installedModelDefaults(): String = modelProfile.toString()
+    private val plannerTransport by lazy { ExperiencePlannerTransport(modelProfile.optString("cloudPlannerBaseUrl")) }
+    fun plannerRequestStart(url: String, key: String, body: String, timeout: Int): String =
+        plannerTransport.start(url, key, body, timeout)
+    fun plannerRequestPoll(id: String): String = plannerTransport.poll(id)
+    fun plannerRequestCancel(id: String): Boolean { plannerTransport.cancel(id); return true }
     fun legacySettings(): String = if (activity.packageName == "com.clawmate.app") {
         LegacySettingsImport.read(activity.filesDir).toString()
     } else "{}"
@@ -398,7 +405,7 @@ class PlatformBridge(private val activity: StageActivity) :
     fun avatarForegroundCancel(id: String): Boolean { avatarJobs.cancel(id); return true }
     fun workflowStart(raw: String): String = startWorkflow(raw, interactive = false)
     fun workflowDeciderHttpAllowed(url: String): Boolean = com.clawmate.platform.mika.MikaVisionConfig.run {
-        permitsDebugHttp(url, debugOrigin(activity))
+        permitsWorkflowHttp(url, workflowHttpOrigin(activity))
     }
     fun workflowStartCollection(raw: String, runName: String): String =
         startWorkflow(raw, interactive = true, collectionRun = runName)
@@ -602,7 +609,7 @@ class PlatformBridge(private val activity: StageActivity) :
     fun mikaMemoryClose(id: String): Boolean { memorySessions.close(id); return true }
     fun mikaMemoryFinish(id: String, url: String, model: String, key: String): String = mikaJobs.startWithProgress { progress ->
         progress("整理本次用户记忆")
-        val count = runBlocking(kotlinx.coroutines.Dispatchers.IO) { memorySessions.finish(id, url, model, key) }
+        val count = runBlocking(kotlinx.coroutines.Dispatchers.IO) { memorySessions.finish(id, url, model, key, modelProfile.optString("cloudPlannerBaseUrl")) }
         com.clawmate.platform.gui.MikaPhoneResult("success", if (count > 0) "Mika 记忆更新 ${count} 条，可在「Mika 记忆」中查看和撤销。" else "")
     }
     fun mikaMemorySettings(): Boolean = onUi { com.clawmate.platform.mika.memory.MikaMemoryUi.show(activity); true }
@@ -695,7 +702,12 @@ class PlatformBridge(private val activity: StageActivity) :
     fun guiControlOpen(): Boolean = onUi { com.clawmate.platform.gui.GuiControlEntry.open(activity);true }
     fun guiCollectionOpen(): Boolean = onUi { com.clawmate.platform.gui.GuiControlEntry.open(activity, collectOnly = true);true }
     fun guiCollectionApps(): String = onUi { com.clawmate.platform.gui.GuiControlEntry.collectionApps(activity) }
-    fun guiCollectionHistory(): Boolean = onUi { com.clawmate.platform.gui.GuiControlEntry.showCollections(activity);true }
+    fun guiCollectionHistory(): Boolean = onUi { com.clawmate.platform.gui.GuiControlEntry.showCollections(activity) { callMethod("floatingArchiveChanged") };true }
+    fun guiFloatingGroups(): String = com.clawmate.platform.gui.GuiControlEntry.floatingGroups(activity)
+    fun guiFloatingGroup(scene: Int, pkg: String): Boolean = onUi {
+        com.clawmate.platform.gui.GuiControlEntry.showCollections(activity, scene, pkg) { callMethod("floatingArchiveChanged") }
+        true
+    }
     fun guiCollectionQuery(raw: String): String = com.clawmate.platform.gui.GuiCollectionSearch.query(activity.applicationContext, raw)
     fun guiControlStop(): Boolean = onUi { com.clawmate.platform.gui.GuiControlService.connected?.stop();true }
     fun guiControlStatus(): String = JSONObject().put("v",1)
@@ -872,6 +884,7 @@ class PlatformBridge(private val activity: StageActivity) :
         sourceAuth.close(); sources.close(); sourceJobs.close(); modelDownloader.close()
         guiScreenshotDetach();screenshotJobs.close()
         speechHttp.close();pcmSpeech.close();onUi{fileSpeech.close()}
+        plannerTransport.close()
         meeting.close()
         ocrJobs.close()
         avatarJobs.close()

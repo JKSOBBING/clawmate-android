@@ -10,6 +10,144 @@ import org.junit.Test
 import java.io.File
 
 class PersonalSourcesDeviceTest {
+    @Test fun publicUpcomingCalendarItemIsVisibleInHomeReminders() {
+        val inst = InstrumentationRegistry.getInstrumentation()
+        val expected = InstrumentationRegistry.getArguments().getString("upcomingPublicHoliday")
+        org.junit.Assume.assumeTrue(inst.targetContext.packageName == "com.clawmate.experience" && !expected.isNullOrBlank())
+        val context = inst.targetContext
+        org.junit.Assume.assumeFalse("Preserve any existing synchronized calendar", File(context.filesDir, "personal-sources/calendar.json").exists())
+        androidx.test.core.app.ActivityScenario.launch(SharedActivity::class.java).use { scene ->
+            lateinit var port: PlatformBridge
+            scene.onActivity { activity ->
+                port = SharedActivity::class.java.getDeclaredField("platform").apply { isAccessible = true }.get(activity) as PlatformBridge
+            }
+            val original = port.sourcesOptions()
+            org.junit.Assume.assumeFalse("Only use an unconfigured calendar", JSONObject(original).optBoolean("calendarEnabled"))
+            try {
+                val enabled = JSONObject(original).put("calendarEnabled", true).put("holidayEnabled", true).put("festivalEnabled", true)
+                assertTrue(JSONObject(port.sourcesSaveOptions("calendar", enabled.toString())).getBoolean("ok"))
+                val id = port.sourcesStart("calendar", """{"quick":true}""")
+                var job = JSONObject(port.sourcesPoll(id))
+                val deadline = android.os.SystemClock.elapsedRealtime() + 12000
+                while (job.optString("state") == "running" && android.os.SystemClock.elapsedRealtime() < deadline) {
+                    Thread.sleep(120)
+                    job = JSONObject(port.sourcesPoll(id))
+                }
+                assertEquals("done", job.optString("state"))
+                val result = JSONObject(job.getString("value"))
+                assertTrue(result.getBoolean("ok"))
+                val items = JSONObject(result.getString("value")).getJSONArray("items")
+                val publicItemAvailable = (0 until items.length()).any { i -> items.getJSONObject(i).getString("title").contains(expected!!) }
+                inst.sendStatus(2, android.os.Bundle().apply { putBoolean("upcomingPublicItemInSource", publicItemAvailable) })
+                assertTrue("Selected public holiday must exist in the active seven-day source", publicItemAvailable)
+                scene.recreate()
+                if (!DeviceTestTimeouts.clickNavigation("首页")) DevicePageControls.open("首页")
+                DevicePageControls.open("为你提醒")
+                DevicePageControls.expect(requireNotNull(expected))
+                inst.sendStatus(2, android.os.Bundle().apply { putString("homeUpcomingPublicReminder", expected) })
+            } finally {
+                assertTrue(JSONObject(port.sourcesSaveOptions("calendar", original)).getBoolean("ok"))
+            }
+        }
+    }
+
+    @Test fun explicitlySelectedCalendarMarkerIsReadableOnExperienceDevice() {
+        val inst = InstrumentationRegistry.getInstrumentation()
+        val context = inst.targetContext
+        val marker = InstrumentationRegistry.getArguments().getString("publicCalendarMarker")
+        org.junit.Assume.assumeTrue(context.packageName == "com.clawmate.experience" && !marker.isNullOrBlank())
+        require(marker!!.length in 1..80 && marker.none { it == '%' || it == '_' })
+        androidx.test.core.app.ActivityScenario.launch(SharedActivity::class.java).use { scene ->
+            lateinit var bridge: PlatformBridge
+            scene.onActivity { activity ->
+                bridge = SharedActivity::class.java.getDeclaredField("platform").apply { isAccessible = true }.get(activity) as PlatformBridge
+                bridge.sourcesPermissionStart(false)
+            }
+            val until = android.os.SystemClock.elapsedRealtime() + 25000
+            fun allowButton(node: android.view.accessibility.AccessibilityNodeInfo?): android.view.accessibility.AccessibilityNodeInfo? {
+                if (node == null) return null
+                if (node.packageName?.toString() in setOf("com.android.permissioncontroller", "com.google.android.permissioncontroller") &&
+                    node.viewIdResourceName?.endsWith(":id/permission_allow_button") == true) return node
+                for (i in 0 until node.childCount) allowButton(node.getChild(i))?.let { return it }
+                return null
+            }
+            while (context.checkSelfPermission(android.Manifest.permission.READ_CALENDAR) != android.content.pm.PackageManager.PERMISSION_GRANTED &&
+                android.os.SystemClock.elapsedRealtime() < until) {
+                allowButton(inst.uiAutomation.rootInActiveWindow)?.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK)
+                Thread.sleep(150)
+            }
+            assertEquals("Read-only calendar request must be granted through the normal consent dialog",
+                android.content.pm.PackageManager.PERMISSION_GRANTED, context.checkSelfPermission(android.Manifest.permission.READ_CALENDAR))
+            val day = java.time.LocalDate.parse(InstrumentationRegistry.getArguments().getString("publicCalendarDate"))
+            val zone = java.time.ZoneId.systemDefault()
+            val uri = android.provider.CalendarContract.Instances.CONTENT_URI.buildUpon()
+            android.content.ContentUris.appendId(uri, day.atStartOfDay(zone).toInstant().toEpochMilli())
+            android.content.ContentUris.appendId(uri, day.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli())
+            val words = marker.split(' ').filter(String::isNotEmpty)
+            val pattern = words.joinToString("%", prefix = "%", postfix = "%")
+            context.contentResolver.query(uri.build(), arrayOf("event_id"), "title LIKE ?", arrayOf(pattern), null).use { cursor ->
+                val count = requireNotNull(cursor).count
+                inst.sendStatus(2, android.os.Bundle().apply { putInt("selectedCalendarMarkerCount", count) })
+                assertTrue("The selected calendar marker was not present in this provider", count > 0)
+            }
+        }
+    }
+
+    @Test fun experienceEntryShowsItsExpectedService() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val route = InstrumentationRegistry.getArguments().getString("experienceRoute")
+        org.junit.Assume.assumeTrue(instrumentation.targetContext.packageName == "com.clawmate.experience" && route != null)
+        val labels = when (route) {
+            "calendar" -> listOf("汇总", "日历分析", "读取手机系统日历")
+            "mail" -> listOf("汇总", "邮箱分析", "邮箱账号")
+            "domain" -> listOf("汇总", "全部领域", "差旅")
+            "hdc" -> listOf("我的", "手机 HDC", "打开手机控制设置", "应用访问")
+            "codex" -> listOf("Codex", "创建连接")
+            "task" -> listOf("任务", "手机自己控制")
+            "privacy" -> listOf("我的", "个人与隐私", "隐私政策")
+            else -> error("Unknown release check")
+        }
+        androidx.test.core.app.ActivityScenario.launch(SharedActivity::class.java).use {
+            labels.dropLast(1).forEach { DevicePageControls.open(it) }
+            DevicePageControls.expect(labels.last())
+        }
+    }
+
+    @Test fun isolatedExperienceProfileCanBeSavedAndReopenedFromSummary() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val context = instrumentation.targetContext
+        org.junit.Assume.assumeTrue(context.packageName == "com.clawmate.experience")
+        val state = File(context.filesDir, "files/people-memory/subjects.json")
+        org.junit.Assume.assumeFalse("Only use a fresh profile store", state.exists())
+        val example = "ClawMateQADemo"
+        try {
+            androidx.test.core.app.ActivityScenario.launch(SharedActivity::class.java).use { scene ->
+                fun enterProfile() {
+                    if (!DeviceTestTimeouts.clickNavigation("汇总")) DevicePageControls.open("汇总")
+                    DevicePageControls.open("人物资料")
+                    DevicePageControls.open("本人")
+                }
+                enterProfile()
+                DevicePageControls.open("填写姓名")
+                android.os.ParcelFileDescriptor.AutoCloseInputStream(
+                    instrumentation.uiAutomation.executeShellCommand("input text $example")
+                ).use { it.readBytes() }
+                DevicePageControls.open("保存")
+                val deadline = android.os.SystemClock.elapsedRealtime() + 6000
+                while (!state.isFile && android.os.SystemClock.elapsedRealtime() < deadline) Thread.sleep(100)
+                assertTrue("Profile editor must persist the new subject", state.isFile)
+                val people = JSONObject(state.readText()).getJSONArray("people")
+                val self = (0 until people.length()).map(people::getJSONObject).single { it.getString("id") == "person:self" }
+                assertEquals(example, self.getJSONObject("values").getString("name"))
+                scene.recreate()
+                enterProfile()
+                DevicePageControls.open(example)
+            }
+        } finally {
+            if (state.isFile && state.readText().contains(example)) state.delete()
+        }
+    }
+
     @Test @androidx.test.filters.SdkSuppress(minSdkVersion = 29)
     fun calendarQueriesUseSelectedSourcesAndStoredWindowWithoutWritingProvider() {
         val base = InstrumentationRegistry.getInstrumentation().targetContext
