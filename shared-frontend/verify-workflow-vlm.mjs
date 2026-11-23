@@ -224,9 +224,10 @@ await check('interactive Xiaohongshu run binds Decider and forwards a single nat
   let authorized = false; let replied = false; let receipt;
   const Workflow = module('shared-frontend/adapters/platform/AndroidWorkflow.ets', 'AndroidWorkflow', { dailyLogMaxEntryId,
     Bridge: { createBridge: () => ({ async callMethod(method, run, request, payload) {
-      if (method === 'workflowStartGui') {
+      if (method === 'workflowStartCollection') {
         assert.equal(authorized, true); assert.equal(run, raw);
-        assert.equal(request, 'https://vision.invalid（saved-model）'); return 'native-run';
+        assert.match(request, /^android-/); assert.equal(payload, false);
+        assert.equal(arguments[4], 'https://vision.invalid（saved-model）'); return 'native-run';
       }
       assert.equal(run, 'native-run');
       if (method === 'workflowToolReply') {

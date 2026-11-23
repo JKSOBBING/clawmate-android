@@ -33,8 +33,6 @@ private class FloatingLogoButton(context: Context) : ImageButton(context) {
 
     override fun onVisibilityAggregated(isVisible: Boolean) {
         super.onVisibilityAggregated(isVisible)
-        scaleX = 1f
-        scaleY = 1f
         showLogo(isVisible)
     }
 
@@ -46,14 +44,8 @@ private class FloatingLogoButton(context: Context) : ImageButton(context) {
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
         when (event.actionMasked) {
-            MotionEvent.ACTION_DOWN -> {
-                showLogo(false)
-                animate().scaleX(.92f).scaleY(.92f).setDuration(75).start()
-            }
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                showLogo(true)
-                animate().scaleX(1f).scaleY(1f).setDuration(130).start()
-            }
+            MotionEvent.ACTION_DOWN -> showLogo(false)
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> showLogo(true)
         }
         return super.dispatchTouchEvent(event)
     }
@@ -61,33 +53,6 @@ private class FloatingLogoButton(context: Context) : ImageButton(context) {
     override fun performAccessibilityAction(action: Int, arguments: Bundle?): Boolean {
         if (action == AccessibilityNodeInfo.ACTION_CLICK) showLogo(true)
         return super.performAccessibilityAction(action, arguments)
-    }
-}
-
-/** Keep the window large enough for the card until its exit animation finishes. */
-internal class FloatingPanelMotion(private val panel: View, private var open: Boolean = false, private val setVisible: (Boolean) -> Unit) {
-    private val offset = -8f * panel.resources.displayMetrics.density
-
-    fun toggle() = present(!open)
-
-    fun present(visible: Boolean) {
-        if (open == visible) return
-        open = visible
-        panel.animate().cancel()
-        if (!ValueAnimator.areAnimatorsEnabled()) {
-            panel.alpha = 1f
-            panel.translationY = 0f
-            setVisible(open)
-            return
-        }
-        if (open && panel.visibility != View.VISIBLE) {
-            panel.alpha = 0f
-            panel.translationY = offset
-            setVisible(true)
-        }
-        panel.animate().alpha(if (open) 1f else 0f).translationY(if (open) 0f else offset)
-            .setInterpolator(DecelerateInterpolator()).setDuration(if (open) 170L else 120L)
-            .withEndAction { if (!open) setVisible(false) }.start()
     }
 }
 
@@ -111,7 +76,8 @@ internal fun floatingLogo(context: Context, label: String): ImageButton = Floati
 }
 
 /** Keep the chosen edge and a proportional height across window sizes and rotations. */
-internal class FloatingPosition(private val context: Context, private val alignContent: (Int) -> Unit = {}) {
+internal class FloatingPosition(private val context: Context, private val moved: () -> Unit = {},
+    private val alignContent: (Int) -> Unit = {}) {
     private val prefs = context.getSharedPreferences("floating-logo", Context.MODE_PRIVATE)
     private val manager = context.getSystemService(WindowManager::class.java)
     private var dockRight = prefs.getFloat("x", 1f) >= .5f
@@ -150,13 +116,18 @@ internal class FloatingPosition(private val context: Context, private val alignC
         alignContent(side)
     }
 
+    private fun update(window: View, params: WindowManager.LayoutParams) {
+        manager.updateViewLayout(window, params)
+        moved()
+    }
+
     private fun settle(window: View, params: WindowManager.LayoutParams) {
         val screen = viewport()
         val start = if (anchoredRight(params) == dockRight) params.x else (screen.width - params.width - params.x).coerceAtLeast(0)
         place(params, screen)
         if (!window.isAttachedToWindow) return
         if (start == 0 || !ValueAnimator.areAnimatorsEnabled()) {
-            manager.updateViewLayout(window, params)
+            update(window, params)
             return
         }
         docking = ValueAnimator.ofInt(start, 0).apply {
@@ -164,7 +135,7 @@ internal class FloatingPosition(private val context: Context, private val alignC
             interpolator = DecelerateInterpolator()
             addUpdateListener {
                 params.x = it.animatedValue as Int
-                if (window.isAttachedToWindow) manager.updateViewLayout(window, params)
+                if (window.isAttachedToWindow) update(window, params)
             }
             start()
         }
@@ -226,7 +197,7 @@ internal class FloatingPosition(private val context: Context, private val alignC
                         val offset = if (anchoredRight(params)) -dx else dx
                         params.x = (originX + offset.roundToInt()).coerceIn(0, (screen.width - window.width).coerceAtLeast(0))
                         params.y = (originY + dy.roundToInt()).coerceIn(0, (screen.height - window.height).coerceAtLeast(0))
-                        manager.updateViewLayout(window, params)
+                        update(window, params)
                     }
                 }
                 MotionEvent.ACTION_UP -> {
@@ -251,38 +222,4 @@ internal class FloatingPosition(private val context: Context, private val alignC
             true
         }
     }
-}
-
-/** Virtual collections with manual steps keep their existing controls behind the same logo. */
-internal class FloatingTaskPanel(context: Context, content: View, label: String) : android.widget.LinearLayout(context) {
-    private val manager = context.getSystemService(WindowManager::class.java)
-    private val position = FloatingPosition(context) { gravity = Gravity.TOP or it }
-    private val size = GuiCollectionStyle(context).dp(48)
-    private val logo = floatingLogo(context, "展开或收起 $label 采集操作")
-    private val controls = android.widget.ScrollView(context).apply { addView(content); visibility = View.GONE }
-    private val params = WindowManager.LayoutParams(size, size, WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE, android.graphics.PixelFormat.TRANSLUCENT).apply { title = "ClawMate 采集操作" }
-
-    init {
-        orientation = VERTICAL
-        addView(logo, LayoutParams(size, size))
-        addView(controls, LayoutParams(-1, -2))
-        val motion = FloatingPanelMotion(controls) { visible ->
-            controls.visibility = if (visible) View.VISIBLE else View.GONE
-            resize()
-        }
-        logo.setOnClickListener { motion.toggle() }
-        position.gestures(logo, this, params)
-        resize()
-    }
-    fun show() = manager.addView(this, params)
-    private fun resize() {
-        params.width = if (controls.visibility == View.GONE) size else minOf(size * 4, resources.displayMetrics.widthPixels)
-        val limit = resources.displayMetrics.heightPixels * 2 / 3
-        measure(MeasureSpec.makeMeasureSpec(params.width, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(limit, MeasureSpec.AT_MOST))
-        params.height = measuredHeight
-        position.place(params)
-        if (isAttachedToWindow) manager.updateViewLayout(this, params)
-    }
-    override fun onConfigurationChanged(config: android.content.res.Configuration) { super.onConfigurationChanged(config); resize() }
 }

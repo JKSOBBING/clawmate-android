@@ -12,6 +12,15 @@ class AccountCollectionPageTest {
     private fun screen(vararg fields: UiElement) = ScreenSnapshot("s", null, fields.toList(), 1080, 2200)
     private fun line(text: String, x: Int, y: Int) = VisibleTextLine(text, listOf(x, y, x + 80, y + 20))
 
+    @Test fun onlyExplicitSplashDismissalsMatch() {
+        for (label in listOf("跳过", "跳过广告", "跳过 (3s)", "5秒 | 跳过", "关闭广告", "Skip ad")) {
+            assertTrue(label, CollectionSplash.isSkip(label))
+        }
+        for (label in listOf("点击查看广告", "跳过支付验证", "关闭", "同意并继续", "跳过登录", "5")) {
+            assertFalse(label, CollectionSplash.isSkip(label))
+        }
+    }
+
     @Test fun builtInRoutesAndOlderTaskFilesResolveToTheSameAccountLists() {
         val x = AccountCollectionPage.XHS
         assertEquals(x, AccountCollectionPage.forRoute(x.pkg, listOf("我", "浏览记录")))

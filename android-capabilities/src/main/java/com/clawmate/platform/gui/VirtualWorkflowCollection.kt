@@ -1,8 +1,6 @@
 package com.clawmate.platform.gui
 
 import android.app.Activity
-import android.app.AlertDialog
-import android.view.WindowManager
 import com.clawmate.app.task.model.WorkflowStep
 import com.clawmate.app.task.runner.WorkflowModelRequest
 import com.clawmate.app.task.runner.WorkflowModelTool
@@ -14,9 +12,7 @@ import com.wangzan101.mika.core.uistate.ScreenPort
 import com.wangzan101.mika.core.uistate.ScreenSnapshot
 import com.wangzan101.mika.core.uistate.UiElement
 import java.util.concurrent.atomic.AtomicInteger
-import kotlin.coroutines.resume
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.json.*
 import okhttp3.OkHttpClient
 import org.json.JSONObject
@@ -34,7 +30,15 @@ internal fun collectionPrerequisite(labels: List<String>): String? {
 internal class CollectionDeclined : IllegalStateException("已取消本次采集，未保存")
 
 /** All screen reads and actions use the same target-bound virtual display. Only ask() has a model transport. */
-internal class VirtualWorkflowCollection(private val activity: Activity, private val authorization: WorkflowModelTool) {
+internal class VirtualWorkflowCollection(private val activity: Activity, private val authorization: WorkflowModelTool,
+    autoSave: Boolean = false,
+) {
+    val results = CollectionResults(autoSave)
+    val savedRecord get() = results.savedRecord
+
+    suspend fun saveSummary(target: String, label: String, summary: String): Boolean =
+        results.save(activity, GuiCollection(target, label, System.currentTimeMillis(), summary.lines().filter(String::isNotBlank), partial = false))
+
     val requests = AtomicInteger()
     val http = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false)
         .retryOnConnectionFailure(false)
@@ -111,9 +115,17 @@ internal class VirtualWorkflowCollection(private val activity: Activity, private
     private suspend fun navigate(port: ScreenPort, target: String, label: String, name: String, id: String, ready: String, proofId: String) {
         require((name.isNotBlank() || id.isNotBlank()) && (ready.isNotBlank() || proofId.isNotBlank())) { "导航步骤需要入口和到达标志" }
         port.waitStable(1500)
-        val screen = safeScreen(port, target)
+        var screen = safeScreen(port, target)
         fun arrived(s: ScreenSnapshot): Boolean = s.elements.any {
             matches(it, ready, proofId) && (ready != name || proofId != id || !it.clickable || "selected" in it.states)
+        }
+        // Imported routes can start behind the same drawn splash as a built-in account task.
+        var attempts = 0
+        while (attempts++ < 12 && !arrived(screen) && screen.elements.none { matches(it, name, id) }) {
+            val ocr = port.readVisibleText().orEmpty()
+            if (!CollectionSplash.dismiss(port, screen, ocr) { safeScreen(port, target) }) break
+            delay(400)
+            screen = safeScreen(port, target)
         }
         val exact = screen.elements.filter { matches(it, name, id) }
         if (arrived(screen) && (exact.isEmpty() || ready != name || proofId.isNotEmpty())) return
@@ -267,18 +279,7 @@ internal class VirtualWorkflowCollection(private val activity: Activity, private
     }
 
     private suspend fun save(record: GuiCollection): String {
-        val approved = suspendCancellableCoroutine<Boolean> { continuation ->
-            val dialog = AlertDialog.Builder(activity, com.clawmate.platform.R.style.ClawMateDialog).setTitle("采集预览 · " + record.sourceLabel)
-                .setMessage("已读取 ${record.pages} 页" + if (record.partial) " · 仅保存本次核实的可见内容" else "").setView(record.preview(activity))
-                .setPositiveButton("保存到本机") { _, _ -> if (continuation.isActive) continuation.resume(true) }
-                .setNegativeButton("取消", null).create()
-            dialog.setOnDismissListener { if (continuation.isActive) continuation.resume(false) }
-            dialog.window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
-            dialog.show()
-            continuation.invokeOnCancellation { activity.runOnUiThread { dialog.dismiss() } }
-        }
-        if (!approved) throw CollectionDeclined()
-        GuiCollectionHistory.save(activity, record)
+        if (!results.save(activity, record)) throw CollectionDeclined()
         pending = null
         return record.lines.joinToString("\n")
     }

@@ -5,6 +5,7 @@ import com.wangzan101.mika.core.assembly.toolDispatcher
 import com.wangzan101.mika.core.uistate.ActionResult
 import com.wangzan101.mika.core.uistate.ScreenPort
 import com.wangzan101.mika.core.uistate.ScreenSnapshot
+import com.wangzan101.mika.core.uistate.VisibleTextLine
 import com.wangzan101.mika.core.uistate.UiElement
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -35,6 +36,29 @@ class MikaCollectionFlowTest {
         assertEquals("第一页 A", MikaCollect.lines(collected.text).first())
         assertTrue("stops after the first screen", collected.pages in 1..2)
         assertTrue(collected.stoppedBecause.isNotEmpty())
+    }
+
+    @Test fun paintedSplashUsesOnlyAReverifiedSkipButton() = runTest {
+        val base = PagedScreen()
+        val screen = base.snapshot()
+        val box = listOf(815, 38, 954, 90)
+        var current = listOf(VisibleTextLine("跳过 3s", box))
+        val taps = mutableListOf<Pair<Int, Int>>()
+        val port = object : ScreenPort by base {
+            override suspend fun readVisibleText() = current
+            override suspend fun tapXY(x: Int, y: Int): ActionResult {
+                taps.add(x to y)
+                return ActionResult.Ok()
+            }
+        }
+        val first = current
+        current = listOf(VisibleTextLine("跳过 2s", box))
+        assertTrue(CollectionSplash.dismiss(port, screen, first) { screen })
+        assertEquals(listOf(87 to 38), taps)
+        current = listOf(VisibleTextLine("查看商品", box))
+        CollectionSplash.dismiss(port, screen, first) { screen }
+        org.junit.Assert.assertFalse(CollectionSplash.dismiss(port, screen, current) { screen })
+        assertEquals(1, taps.size)
     }
 
     private class PagedScreen(private val scrollable: Boolean = true) : ScreenPort {

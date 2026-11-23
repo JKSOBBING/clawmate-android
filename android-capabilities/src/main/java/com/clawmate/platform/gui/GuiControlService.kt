@@ -95,6 +95,8 @@ class GuiControlService : AccessibilityService() {
     private var mikaFrameReadLogged = false
     private var xhsCandidate: Pair<Int, Rect>? = null
     private var xhsCandidateSince = 0L
+    private var checkingLaunchAd = false
+    private var lastSkipAt = 0L
     private var readingWeiboStory = false
     private val watchdog=object:Runnable {
         override fun run() {
@@ -137,41 +139,52 @@ class GuiControlService : AccessibilityService() {
     private var quickCapture: Job? = null
     private var betweenSteps: MikaWorkflowSession? = null
     private var retentionNumber = 0L
-    private var waitingPanel: FloatingTaskPanel? = null
+    private var displayCard: MikaDisplayCard? = null
 
-    private fun hideWaitingPanel() {
-        waitingPanel?.let { if (it.isAttachedToWindow) getSystemService(WindowManager::class.java).removeViewImmediate(it) }
-        waitingPanel = null
+    private fun removeDisplayCard() {
+        displayCard?.let { if (it.isAttachedToWindow) getSystemService(WindowManager::class.java).removeViewImmediate(it) }
+        displayCard = null
+    }
+
+    private fun attachDisplayCard(display: BackgroundDisplay) {
+        val frames = checkNotNull(display.agentDisplay)
+        if (displayCard?.display === frames) return
+        removeDisplayCard()
+        val mika = mikaRun
+        val steer = if (mika != null && mika.workflow?.collection == null) {
+            { mikaRun?.let(::promptMikaSteer); Unit }
+        } else null
+        val card = MikaDisplayCard(this, targetLabel, frames, collectionScope,
+            mika?.workflow?.previewState ?: MikaPreviewState(hidden = mika != null), steer) {
+            if (activeRequest != null) stop("用户停止采集") else betweenSteps?.close()
+        }
+        card.show()
+        displayCard = card
     }
     private var observingLock = false
     private val lockReceiver = object : android.content.BroadcastReceiver() {
         override fun onReceive(context: android.content.Context, intent: Intent) {
-            if (intent.action == Intent.ACTION_SCREEN_OFF) { removeIdleWindow(); hideWaitingPanel() } else refreshFloatingNotes()
+            if (intent.action == Intent.ACTION_SCREEN_OFF) { removeIdleWindow(); removeDisplayCard() } else refreshFloatingNotes()
         }
     }
 
     internal fun refreshFloatingNotes() {
-        if (Build.VERSION.SDK_INT < 34 || connected !== this || grant != null || pendingStart != null ||
+        if (grant != null || pendingStart != null) {
+            removeIdleWindow()
+            return
+        }
+        if (Build.VERSION.SDK_INT < 34 || connected !== this ||
             getSystemService(KeyguardManager::class.java).isKeyguardLocked ||
             !getSystemService(android.os.PowerManager::class.java).isInteractive) {
             removeIdleWindow()
-            hideWaitingPanel()
+            removeDisplayCard()
             return
         }
-        val owner = betweenSteps
-        if (owner != null) {
+        if (betweenSteps != null) {
             removeIdleWindow()
-            if (waitingPanel == null) {
-                val style = GuiCollectionStyle(this)
-                val content = style.card(compact = true).apply {
-                    addView(style.label("虚拟屏等待下一步", 14, true))
-                    addView(style.action("关闭虚拟屏") { owner.close() })
-                }
-                waitingPanel = FloatingTaskPanel(this, content, "虚拟屏").also { it.show() }
-            }
             return
         }
-        hideWaitingPanel()
+        removeDisplayCard()
         if (!FloatingNotes.enabled(this)) { removeIdleWindow(); return }
         val current = idleWindow
         if (current != null) current.refresh() else {
@@ -212,7 +225,7 @@ class GuiControlService : AccessibilityService() {
         if (connected === this) connected = null
         betweenSteps?.close()
         betweenSteps = null
-        hideWaitingPanel()
+        removeDisplayCard()
         removeIdleWindow()
         if (observingLock) { unregisterReceiver(lockReceiver); observingLock = false }
     }
@@ -264,6 +277,7 @@ class GuiControlService : AccessibilityService() {
             return
         }
         try {
+            if (checkingLaunchAd && Build.VERSION.SDK_INT >= 34 && dismissStartupAd(candidate, root, target)) return
             if (weibo != null && Build.VERSION.SDK_INT >= 34) {
                 val bounds = Rect().also(candidate::getBoundsInScreen)
                 val tabs = WeiboGuiWorkflow.boardTabs(root, safeBounds(bounds))
@@ -304,6 +318,29 @@ class GuiControlService : AccessibilityService() {
             showPanel()
         } catch (_: Exception) { /* short launch grace only */ }
     }
+    @RequiresApi(34)
+    private fun dismissStartupAd(window: AccessibilityWindowInfo, root: AccessibilityNodeInfo, target: String): Boolean {
+        val bounds = Rect().also(window::getBoundsInScreen)
+        if (bounds.isEmpty) return false
+        val nodes = listOf("跳过", "关闭广告", "Skip").flatMap { root.findAccessibilityNodeInfosByText(it).orEmpty() }.distinct()
+        val button = nodes.singleOrNull { node ->
+            val box = Rect().also(node::getBoundsInScreen)
+            node.isVisibleToUser && node.isEnabled && !node.isEditable && !node.isPassword && !node.isAccessibilityDataSensitive &&
+                node.packageName?.toString() == target && listOf(node.text, node.contentDescription).any { CollectionSplash.isSkip(it.toString()) } &&
+                CollectionSplash.inCorner((box.left - bounds.left) * 999 / bounds.width(), (box.top - bounds.top) * 999 / bounds.height(),
+                    (box.right - bounds.left) * 999 / bounds.width(), (box.bottom - bounds.top) * 999 / bounds.height())
+        } ?: return false
+        if (runCatching { collectionWindow(window.id, bounds) }.isFailure) return false
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastSkipAt < 1000) return true
+        lastSkipAt = now
+        if (button.isClickable && performCollectionAction(button, window.id, bounds, AccessibilityNodeInfo.ACTION_CLICK)) {
+            displayCard?.status?.text = "正在跳过开屏广告"
+        }
+        // Non-clickable countdowns disappear on their own. The normal launch deadline still applies.
+        return true
+    }
+
     override fun onInterrupt(){stop("系统中断控制会话")}
     override fun onUnbind(intent:Intent?):Boolean{detachFloating();stop("无障碍服务已断开");if(connected===this)connected=null;return super.onUnbind(intent)}
     override fun onDestroy(){detachFloating();stop("无障碍服务已销毁");collectionScope.cancel();if(connected===this)connected=null;super.onDestroy()}
@@ -322,7 +359,6 @@ class GuiControlService : AccessibilityService() {
         if (manual?.remembered == true) check(manualGrants.allows(request.target)) { "手动控制授权已撤销" }
         if (request.task is GuiControlTask.Mika) MikaAppAccess.requireAllowed(this, request.target)
         removeIdleWindow()
-        hideWaitingPanel()
         pendingStart = request
         var display: BackgroundDisplay? = null
         try {
@@ -333,7 +369,7 @@ class GuiControlService : AccessibilityService() {
                         request.task.run.workflow?.takeDisplay(request.target, required = request.task.run.workflowAction != null)
                             ?: BackgroundDisplay.openForAgent(this@GuiControlService, request.launch,
                                 detailedText = request.target == AccountCollectionPage.ELE.pkg && request.task.run.workflow?.collection != null)
-                    } else BackgroundDisplay.open(request.launch)
+                    } else BackgroundDisplay.openForAgent(this@GuiControlService, request.launch)
                 }
                 check(connected === this && pendingStart === request) { "采集已停止或无障碍服务已断开" }
                 checkForeground()
@@ -352,6 +388,10 @@ class GuiControlService : AccessibilityService() {
             pendingStart = null
             backgroundDisplay = display
             display = null
+            checkingLaunchAd = backgroundDisplay != null && (weiboRun != null || xhsRun != null ||
+                mikaRun?.let { it.openOnly && it.workflow?.collection != null } == true)
+            lastSkipAt = 0L
+            backgroundDisplay?.let(::attachDisplayCard)
             weiboRun?.let { it.begin(it.steps.first(), checkNotNull(backgroundDisplay).id) }
             armedUntil = now + if (collectOnly || mikaRun != null) 20_000 else 5_000
             lastStatus = if (useBackground) "等待后台屏打开：$targetLabel" else "等待目标应用进入前台：$targetLabel"
@@ -433,7 +473,8 @@ class GuiControlService : AccessibilityService() {
         mikaFrameReadLogged = false
         xhsCandidate = null
         dialog?.dismiss();dialog=null;preview?.recycle();preview=null
-        panel?.let{runCatching{getSystemService(WindowManager::class.java).removeView(it)}};panel=null
+        panel?.takeUnless { it === displayCard }?.let { runCatching { getSystemService(WindowManager::class.java).removeView(it) } }
+        panel = null
         refreshFloatingNotes()
         lastStatus=reason
         if(active && !(interruptedMika?.openOnly == true && interruptedMika.succeeded))android.widget.Toast.makeText(this,reason,android.widget.Toast.LENGTH_LONG).show()
@@ -546,15 +587,14 @@ class GuiControlService : AccessibilityService() {
         val pages = pageRun
         val mika = mikaRun
         val display = backgroundDisplay
-        if (mika != null && display != null && Build.VERSION.SDK_INT >= 34) {
-            val card = MikaDisplayCard(
-                this, targetLabel, checkNotNull(display.agentDisplay), collectionScope,
-                mika.workflow?.previewState ?: MikaPreviewState(),
-                { promptMikaSteer(mika) }, { stop("用户停止手机控制") },
-            )
-            card.show()
+        if (display != null && Build.VERSION.SDK_INT >= 34) {
+            val card = checkNotNull(displayCard)
             panel = card
-            startMikaExecution(mika, card.status)
+            when {
+                weibo != null -> startWeiboSteps(weibo, card.status)
+                xhs != null -> startXhsSteps(xhs, card.status)
+                mika != null -> startMikaExecution(mika, card.status)
+            }
             return
         }
         val style = if (weibo == null && xhs == null && pages == null && mika == null) null else GuiCollectionStyle(this)
@@ -639,14 +679,8 @@ class GuiControlService : AccessibilityService() {
         params.gravity=Gravity.TOP or Gravity.END;params.x=8;params.y=80
         params.width=minOf((150*resources.displayMetrics.density).toInt(),resources.displayMetrics.widthPixels/3)
         if (style != null) { params.width = minOf(style.dp(172), resources.displayMetrics.widthPixels / 2); params.x = style.dp(12); params.y = style.dp(12) }
-        if (display != null) {
-            val floating = FloatingTaskPanel(this, layout, targetLabel)
-            floating.show()
-            panel = floating
-        } else {
-            getSystemService(WindowManager::class.java).addView(layout, params)
-            panel = layout
-        }
+        getSystemService(WindowManager::class.java).addView(layout, params)
+        panel = layout
         pages?.advance(pages.plan.read, "已打开目标应用，等待手动定位页面")
         lastStatus=if (collectOnly) "本机采集会话进行中：$targetLabel" else "手动控制进行中：$targetLabel"
         if (weibo != null && Build.VERSION.SDK_INT >= 34) startWeiboSteps(weibo, status)
@@ -1099,13 +1133,12 @@ class GuiControlService : AccessibilityService() {
                             delay(700)
                         }
                         "finish" -> {
-                            val preview = CompletableDeferred<Boolean>()
                             val record = GuiCollection(XhsGuiWorkflow.PACKAGE, "${XhsGuiWorkflow.LABEL} · ${run.keyword}",
                                 System.currentTimeMillis(), excerpts.toList(), partial = true, pages = pages)
-                            status.text = "等待核对与保存"
-                            showCollectionPreview(record, "搜索关键词：${run.keyword}", turn, id, bounds,
-                                brandedTitle = "小红书公开笔记预览") { preview.complete(it) }
-                            if (preview.await()) run.finish(RunStatus.SUCCESS, "已保存 ${excerpts.size} 条小红书公开笔记摘录", record.lines.joinToString("\n"))
+                            status.text = if (run.collection.results.autoSave) "正在保存" else "等待核对与保存"
+                            val saved = showCollectionPreview(record, "搜索关键词：${run.keyword}", turn, id, bounds,
+                                brandedTitle = "小红书公开笔记预览")
+                            if (saved) run.finish(RunStatus.SUCCESS, "已保存 ${excerpts.size} 条小红书公开笔记摘录", record.lines.joinToString("\n"))
                             else run.finish(RunStatus.CANCELLED, "已取消预览，未保存小红书记录")
                             stop("小红书 AI 采集已结束")
                             return@launch
@@ -1145,7 +1178,7 @@ class GuiControlService : AccessibilityService() {
                         WeiboGuiWorkflow.OPEN -> "正在打开微博榜单"
                         WeiboGuiWorkflow.SELECT -> "正在切换到公开热搜"
                         WeiboGuiWorkflow.READ -> "正在读取公开主榜"
-                        WeiboGuiWorkflow.PREVIEW -> "等待核对与保存"
+                        WeiboGuiWorkflow.PREVIEW -> if (run.collection.results.autoSave) "正在保存" else "等待核对与保存"
                         else -> "等待页面加载"
                     }
                     collectionWindow(id, bounds)
@@ -1182,15 +1215,14 @@ class GuiControlService : AccessibilityService() {
                             "读取 ${collected.lines.size} 条微博热搜"
                         }
                         WeiboGuiWorkflow.PREVIEW -> {
-                            val preview = CompletableDeferred<Boolean>()
-                            showCollectionPreview(checkNotNull(record), "热度按微博显示保存。缺失或有冲突的名次留空。",
-                                turn, id, bounds) { preview.complete(it) }
-                            if (!preview.await()) {
+                            val saved = showCollectionPreview(checkNotNull(record), "热度按微博显示保存。缺失或有冲突的名次留空。",
+                                turn, id, bounds)
+                            if (!saved) {
                                 run.finish(RunStatus.CANCELLED, "已取消预览，未保存微博采集记录")
                                 stop("已取消微博采集")
                                 return@launch
                             }
-                            "已确认并保存到本机"
+                            "已保存到本机"
                         }
                         else -> {
                             delay(checkNotNull(step.seconds) * 1000)
@@ -1740,38 +1772,19 @@ class GuiControlService : AccessibilityService() {
         }
     }
 
-    private fun showCollectionPreview(record: GuiCollection, end: String?, turn: Int, windowId: Int, bounds: Rect,
+    private suspend fun showCollectionPreview(record: GuiCollection, end: String?, turn: Int, windowId: Int, bounds: Rect,
         brandedTitle: String? = if (record.weibo == null) null else "微博热搜预览",
         onDismiss: (Boolean) -> Unit = {},
-    ) {
-        var saved = false
-        val message = listOfNotNull(
-            record.description(), end, "保存后仅存于本机，可在采集记录中查看或删除。",
-        ).joinToString("\n")
-        val save = {
-            if (turn == epoch) runCatching {
-                collectionWindow(windowId, bounds)
-                GuiCollectionHistory.save(this, record)
-                saved = true
-                lastStatus = "已保存到本机采集记录：${record.sourceLabel}"
-                Toast.makeText(this, lastStatus, Toast.LENGTH_LONG).show()
-            }.onFailure { stop(it.message ?: "未保存采集记录，请重新采集") }
-            Unit
+    ): Boolean {
+        val results = weiboRun?.collection?.results ?: xhsRun?.collection?.results ?: CollectionResults()
+        val saved = results.save(this, record, brandedTitle, end) {
+            check(turn == epoch) { "采集会话已结束" }
+            collectionWindow(windowId, bounds)
         }
-        val previewDialog = if (brandedTitle != null) {
-            val style = GuiCollectionStyle(this)
-            style.sheet(brandedTitle, message, "保存到本机", content = style.recordContent(record),
-                overlay = true, secure = true, confirm = save).also { dialog = it }
-        } else {
-            overlayDialog(AlertDialog.Builder(this, com.clawmate.platform.R.style.ClawMateDialog).setTitle("采集预览：${record.sourceLabel}")
-                .setMessage(message).setView(record.preview(this)).setNegativeButton("取消", null)
-                .setPositiveButton("保存到本机") { _, _ -> save() }, secure = true)
-        }
-        previewDialog.setOnDismissListener {
-            if (dialog === previewDialog) dialog = null
-            if (turn == epoch) busy = false
-            onDismiss(saved)
-        }
+        if (turn == epoch) busy = false
+        if (saved) lastStatus = "已保存到本机采集记录：${record.sourceLabel}"
+        onDismiss(saved)
+        return saved
     }
     private fun screenshot(receive:(Bitmap,Rect,Int)->Unit) {
         check(Build.VERSION.SDK_INT>=34)

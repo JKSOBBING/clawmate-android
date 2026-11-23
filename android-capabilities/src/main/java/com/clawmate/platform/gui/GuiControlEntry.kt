@@ -38,13 +38,17 @@ object GuiControlEntry {
 
     suspend fun runWorkflow(activity: Activity, definition: WorkflowDefinition, model: WorkflowModelTool,
         destination: String,
+    ): WorkflowRunResult = runWorkflow(activity, definition, model, destination, VirtualWorkflowCollection(activity, model))
+
+    internal suspend fun runWorkflow(activity: Activity, definition: WorkflowDefinition, model: WorkflowModelTool,
+        destination: String, collection: VirtualWorkflowCollection,
     ): WorkflowRunResult {
         val steps = definition.steps
         if (steps.any { it.action == XhsGuiWorkflow.ACTION }) {
-            return runXhsWorkflow(activity, steps, model, destination)
+            return runXhsWorkflow(activity, steps, model, destination, collection)
         }
         if (steps.any { it.type == WeiboGuiWorkflow.TYPE && it.action?.startsWith("weibo_") == true }) {
-            return runWeiboWorkflow(activity, steps, model)
+            return runWeiboWorkflow(activity, steps, collection)
         }
         return runPageWorkflow(activity, definition, model, destination)
     }
@@ -222,13 +226,13 @@ object GuiControlEntry {
         }.setNegativeButton("取消",null).show()
     }
 
-    private suspend fun runWeiboWorkflow(activity: Activity, steps: List<WorkflowStep>, model: WorkflowModelTool): WorkflowRunResult {
+    private suspend fun runWeiboWorkflow(activity: Activity, steps: List<WorkflowStep>, collection: VirtualWorkflowCollection): WorkflowRunResult {
         val limit = try {
             WeiboGuiWorkflow.validate(steps)
         } catch (failure: IllegalArgumentException) {
             return WorkflowRunResult(RunStatus.BLOCKED, failure.message ?: "微博采集图配置有误")
         }
-        val run = WeiboGuiRun(steps, limit, VirtualWorkflowCollection(activity, model))
+        val run = WeiboGuiRun(steps, limit, collection)
         val range = if (limit == 0) "逐页读取整个公开热搜榜" else "读取最多 $limit 条可见热搜"
         return runApprovedCollection(
             activity, GuiControlRequest("微博热搜", WeiboGuiWorkflow.launchIntent(), GuiControlTask.Weibo(run)),
@@ -238,7 +242,7 @@ object GuiControlEntry {
     }
 
     private suspend fun runXhsWorkflow(activity: Activity, steps: List<WorkflowStep>, model: WorkflowModelTool,
-        destination: String,
+        destination: String, collection: VirtualWorkflowCollection,
     ): WorkflowRunResult {
         val (keyword, task) = try { XhsGuiWorkflow.validate(steps) }
         catch (failure: IllegalArgumentException) {
@@ -246,10 +250,10 @@ object GuiControlEntry {
         }
         val local = task == XhsGuiWorkflow.DEFAULT_PROMPT
         if (!local && destination.isBlank()) return WorkflowRunResult(RunStatus.BLOCKED, "自定义笔记采集需要确认 Decider，请从任务卡运行")
-        val run = XhsGuiRun(steps.single(), keyword, task, model, VirtualWorkflowCollection(activity, model))
+        val run = XhsGuiRun(steps.single(), keyword, task, model, collection)
         return runApprovedCollection(
             activity, GuiControlRequest("小红书 AI 采集", XhsGuiWorkflow.launch(keyword), GuiControlTask.Xhs(run)),
-            if (local) "公开搜索：$keyword\n将在虚拟屏依次读取两页公开笔记，确认预览后保存。" else "公开搜索：$keyword\n提示词：$task\n\n发送提示词、可用操作和进度给 $destination。笔记摘录在本机读取，确认预览后保存。",
+            if (local) "公开搜索：$keyword\n将在虚拟屏依次读取两页公开笔记，确认预览后保存。" else "公开搜索：$keyword\n提示词：$task\n\n发送提示词、可用操作和进度给 $destination。笔记摘录在本机读取。",
             "找不到可打开公开搜索页的小红书，请检查客户端版本", run.result,
         )
     }
@@ -289,19 +293,18 @@ object GuiControlEntry {
         }
         val backgroundAvailable = BackgroundDisplay.available
         if (virtualOnly && !backgroundAvailable) return@withContext WorkflowRunResult(RunStatus.BLOCKED, "虚拟屏助手已断开，请重新运行采集")
-        val background = if (request.supportsBackground && !virtualOnly) Switch(activity).apply {
-            text = if (backgroundAvailable) "在后台屏采集" else "后台屏助手未连接"
-            isEnabled = backgroundAvailable
-        } else null
-        val dialog = GuiCollectionStyle(activity).sheet(title,
-            "$explanation\n锁屏会停止采集。前台模式下离开目标应用也会停止。",
-            "运行采集", content = background, scrollMessage = scrollMessage) { consent.complete(virtualOnly || background?.isChecked == true) }
+        val customModel = (request.task as? GuiControlTask.Xhs)?.run?.localPolicy == false
+        val dialog = if (virtualOnly && !customModel) {
+            consent.complete(true)
+            null
+        } else GuiCollectionStyle(activity).sheet(title, explanation,
+            if (customModel) "允许本次模型采集" else "运行采集", scrollMessage = scrollMessage) { consent.complete(virtualOnly) }
             .apply { setOnDismissListener { consent.complete(null) } }
         try {
             withTimeoutOrNull(105_000) {
                 val useBackground = consent.await()
                     ?: return@withTimeoutOrNull WorkflowRunResult(RunStatus.CANCELLED, "已取消${request.label}")
-                delay(250)
+                if (dialog != null) delay(250)
                 service.startSession(request, useBackground) { foreground(activity) }
                 result.await()
             } ?: WorkflowRunResult(RunStatus.CANCELLED, "${request.label}已超时")
@@ -314,7 +317,7 @@ object GuiControlEntry {
         } catch (_: android.os.RemoteException) {
             WorkflowRunResult(RunStatus.NOT_CONFIGURED, "后台屏助手已断开，请重新连接")
         } finally {
-            dialog.dismiss()
+            dialog?.dismiss()
             service.stopSession(request, "${request.label}已结束")
         }
     }

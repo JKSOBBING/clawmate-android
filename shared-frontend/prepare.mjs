@@ -679,7 +679,7 @@ let taskPage = applyPatches(read('pages/task/TaskPage.ets'), [
   [/  onRunWorkflow: [^]*?(?=  onRunPhoneWorkflow:)/,
     '  onRunWorkflow: (task: WorkflowTask, cancellation: WorkflowCancellation) => Promise<boolean> = async (): Promise<boolean> => false;\n'],
   [/  onRunPhoneWorkflow: [^]*?\n  \};/,
-    '  onRunPhoneWorkflow: (task: WorkflowTask, cancellation: WorkflowCancellation, interactive: boolean) => Promise<boolean> =\n    async (): Promise<boolean> => false;'],
+    '  onRunPhoneWorkflow: (task: WorkflowTask, cancellation: WorkflowCancellation, interactive: boolean, autoSave: boolean) => Promise<boolean> =\n    async (): Promise<boolean> => false;'],
   ["import { AiLoginGuard } from '../../components/AiLoginGuard';\n", ''],
   ["import { SelfHdcSetupGuard } from '../../utils/selfhdc/SelfHdcSetupGuard';\n", ''],
   [/^    if \(!AiLoginGuard.ensure\(this.getUIContext\(\)\)\) \{(?: return; \}|\n      return;\n    \})\n/gm, ''],
@@ -691,16 +691,16 @@ let taskPage = applyPatches(read('pages/task/TaskPage.ets'), [
     '      this.batchCancellation = new WorkflowCancellation();\n      await this.runSelectedWorkflow(currentTask, this.batchCancellation, true);'],
   ['      this.preparingTaskId = \'\';\n      this.runningTaskId = \'\';', "      this.preparingTaskId = '';\n      this.runningTaskId = '';\n      this.batchCancellation = null;"],
   [/  private async runSelectedWorkflow\([^]*?\n  \}/, `  private async runSelectedWorkflow(task: WorkflowTask, cancellation: WorkflowCancellation,
-    interactive: boolean = false): Promise<boolean> {
+    interactive: boolean = false, autoSave: boolean = false): Promise<boolean> {
     cancellation.throwIfCancelled();
-    const saved = this.taskControlMode === 'phone' ? await this.onRunPhoneWorkflow(task, cancellation, interactive) :
+    const saved = this.taskControlMode === 'phone' ? await this.onRunPhoneWorkflow(task, cancellation, interactive, autoSave) :
       await this.onRunWorkflow(task, cancellation);
     if (saved) { this.androidCollectedResultsReady = true; SettingsStore.save(); }
     return saved;
   }`],
   ['    let attemptedTasks = 0;', '    let collectedSummaries = 0;'],
   ['          attemptedTasks++;\n          await this.runSelectedWorkflow(currentTask, cancellation, i === 0 ? preparedSettings : undefined);',
-    '          if (await this.runSelectedWorkflow(currentTask, cancellation)) { collectedSummaries++; }'],
+    '          if (await this.runSelectedWorkflow(currentTask, cancellation, false, !automatic)) { collectedSummaries++; }'],
   ["            this.tasks = WorkflowStorage.updateTaskRun(this.filesDir, currentTask.id, 'failed', err.message);",
     '            this.tasks = WorkflowStorage.loadTasks(this.filesDir);'],
   [/      \} else if \(attemptedTasks > 0\) \{[^]*?\n      \}\n    \} finally \{/,
@@ -724,13 +724,36 @@ let taskPage = applyPatches(read('pages/task/TaskPage.ets'), [
   ['.borderRadius(20).enabled(!this.isTaskExecutionBusy())\n          .onClick((): void => { this.runTask(task); })',
     '.borderRadius(20).enabled(this.runningTaskId === task.id || !this.isTaskExecutionBusy())\n' +
     '          .onClick((): void => { if (this.runningTaskId === task.id) { this.batchCancellation?.cancel(); } else { this.runTask(task); } })'],
-  ['      if (this.batchRunStatusText.length > 0) {', `      if ((this.androidCollectedResultsReady || this.batchSyncing) && !this.batchRunning) {
-        Button(this.batchSyncing ? '正在同步…' : '同步采集结果').height(40)
-          .enabled(!this.batchSyncing && !this.isTaskExecutionBusy()).onClick(async (): Promise<void> => {
-            if (this.batchSyncing || this.isTaskExecutionBusy()) { return; }
-            await this.syncSavedCollections();
-          })
-      }
+  ["if (this.batchSyncing) { return '正在同步分析…'; }", "if (this.batchSyncing) { return '回顾你的一天'; }"],
+  ['  @Builder BatchRunPanel() {\n    Column({ space: 10 }) {\n      Row({ space: 12 }) {',
+    `  @Builder BatchRunPanel() {
+    Column({ space: 6 }) {
+      Flex({ wrap: FlexWrap.Wrap, alignItems: ItemAlign.Center }) {`],
+  [`        }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+        Button({ type: ButtonType.Capsule }) {
+          Text(this.batchPreparing`,
+    `        }.flexGrow(1).flexShrink(0).alignItems(HorizontalAlign.Start).margin({ right: 6 })
+        Row({ space: 6 }) {
+          Button({ type: ButtonType.Capsule }) {
+          Text(this.batchPreparing`],
+  ['.width(156).height(44).padding({ left: 12, right: 12 }).flexShrink(0)',
+    '.height(40).padding({ left: 14, right: 14 }).flexShrink(0)'],
+  ['        })\n      }.width(\'100%\')\n      if (this.batchRunStatusText.length > 0) {', `        })
+          if ((this.androidCollectedResultsReady || this.batchSyncing) && !this.batchRunning) {
+            Button({ type: ButtonType.Capsule }) {
+              Text(this.batchSyncing ? '正在同步…' : '同步采集结果')
+                .fontSize(13).fontWeight(FontWeight.Medium).fontColor($r('app.color.ui_text_secondary')).maxLines(1)
+            }
+            .height(40).padding({ left: 12, right: 12 }).backgroundColor($r('app.color.ui_surface_soft'))
+            .border({ width: 1, color: $r('app.color.ui_border'), radius: 20 })
+            .enabled(!this.batchSyncing && !this.isTaskExecutionBusy())
+            .onClick(async (): Promise<void> => {
+              if (this.batchSyncing || this.isTaskExecutionBusy()) { return; }
+              await this.syncSavedCollections();
+            })
+          }
+        }.flexShrink(0)
+      }.width('100%')
       if (this.batchRunStatusText.length > 0) {`],
   ['  @Builder SimpleTaskRow(task: WorkflowTask) {', `  private androidTaskService(task: WorkflowTask): string {
     try {
@@ -765,24 +788,6 @@ let taskPage = applyPatches(read('pages/task/TaskPage.ets'), [
   }`],
   ['  private closeConfigView(): void {', '  private closeConfigView(): void {\n    if (this.editorOpen) { this.requestCloseEditor(); return; }'],
   ['.onClick(() => { this.editorOpen = false; })', '.onClick(() => { this.requestCloseEditor(); })']
-]);
-taskPage = applyPatches(taskPage, [
-  ['  private enabledTasks(): WorkflowTask[] {', `  private reviewTasks(): WorkflowTask[] {
-    // Android's extra public-notes workflow remains available in the configuration list.
-    return this.tasks.filter((task: WorkflowTask): boolean => task.id !== 'default_xhs_public_notes');
-  }
-
-  private reviewTasksForScene(sceneId: number): WorkflowTask[] {
-    return this.reviewTasks().filter((task: WorkflowTask): boolean => task.sceneId === sceneId);
-  }
-
-  private enabledTasks(): WorkflowTask[] {`],
-  ['this.tasksForScene(scenes[sceneIndex].sceneId)', 'this.reviewTasksForScene(scenes[sceneIndex].sceneId)'],
-  [/  private enabledTaskCount\(\): number \{[^]*?\n  \}/,
-    '  private enabledTaskCount(): number { return this.enabledTasks().length; }'],
-  ['this.tasksForScene(scene.sceneId)', 'this.reviewTasksForScene(scene.sceneId)', { all: true }],
-  ['    if (this.tasks.length === 0) {', '    if (this.reviewTasks().length === 0) {'],
-  ["this.enabledTaskCount() + ' / ' + this.tasks.length", "this.enabledTaskCount() + ' / ' + this.reviewTasks().length"]
 ]);
 overlay('pages/task/TaskPage.ets', patchCollectionTaskPage(taskPage));
 writeJson('entry/src/main/resources/base/profile/main_pages.json', { src: [

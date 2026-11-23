@@ -190,14 +190,14 @@ await check('task service labels reflect local, visual and nested automatic GUI 
   assert.equal(taskServiceLabel([{ type: 'gui_task' }, { type: 'loop', steps: [{ type: 'gui_action', action: 'screenshot' }, { type: 'gui_action', action: 'swipe_with_coords' }] }]), 'Mika 虚拟屏');
   assert.equal(taskServiceLabel([{ type: 'if', else_steps: [{ type: 'loop', steps: [{ type: 'gui_task' }] }] }]), 'Mika 虚拟屏');
   assert.equal(taskServiceLabel([{ type: 'tool', tool_name: 'python' }]), '含待适配步骤');
-  assert.equal(taskServiceLabel([{ type: 'android_accessibility' }]), '无障碍采集 · 单次确认');
+  assert.equal(taskServiceLabel([{ type: 'android_accessibility' }]), '虚拟屏采集');
   assert.equal(taskServiceLabel([{ type: 'gui_task', action: 'collection_open_app' },
     { type: 'gui_task', action: 'collection_model_read' }]), '虚拟屏采集 · 按需调用 Mika');
 });
 
-await check('review shows only the shared tasks and configuration retains Android additions', () => {
+await check('review includes every enabled task from the configuration list', () => {
   const page = fs.readFileSync(generated + 'pages/task/TaskPage.ets', 'utf8');
-  const methods = ['reviewTasks', 'reviewTasksForScene', 'enabledTasks', 'enabledTaskCount'].map(name => {
+  const methods = ['tasksForScene', 'enabledTasks', 'enabledTaskCount'].map(name => {
     const match = page.match(new RegExp(`^  private (${name}\\([^\\n]*?\\{(?:[^\\n]+\\}|\\n[\\s\\S]*?^  \\}))`, 'm'));
     assert.ok(match, name);
     return match[1];
@@ -210,9 +210,9 @@ await check('review shows only the shared tasks and configuration retains Androi
     { id: 'default_xhs_public_notes', sceneId: 5, enabled: true },
     { id: 'custom', sceneId: 5, enabled: false }
   ];
-  assert.deepEqual(Array.from(view.reviewTasksForScene(5), task => task.id), ['default_xiaohongshu_history', 'custom']);
-  assert.deepEqual(Array.from(view.enabledTasks(), task => task.id), ['default_xiaohongshu_history']);
-  assert.equal(view.enabledTaskCount(), 1);
+  assert.deepEqual(Array.from(view.tasksForScene(5), task => task.id), ['default_xiaohongshu_history', 'default_xhs_public_notes', 'custom']);
+  assert.deepEqual(Array.from(view.enabledTasks(), task => task.id), ['default_xiaohongshu_history', 'default_xhs_public_notes']);
+  assert.equal(view.enabledTaskCount(), 2);
   assert.equal(view.tasks.length, 3);
   assert.match(page, /return this\.tasksForScene\(this\.taskScene\);/);
 });
@@ -423,7 +423,7 @@ await check('ordinary nested gui_task uses the authorized Mika host and preserve
       if (name === 'workflowStartCollection') {
         assert.equal(args[0], raw);
         assert.match(args[1], /^android-/);
-        assert.equal(args.length, 2);
+        assert.deepEqual(args.slice(2), [false, '']);
         return 'workflow';
       }
       assert.equal(name, 'workflowPoll');
@@ -461,6 +461,33 @@ await check('virtual collection in a nested branch needs no model configuration 
   assert.deepEqual(calls, ['workflowStartCollection', 'workflowPoll']);
   assert.equal(record.collection_model_requests, 0);
   assert.equal(record.source_kind, 'android_workflow');
+});
+
+await check('all installed collection templates use the same phone entry and daily-review save mode', async () => {
+  const configs = '.arkui-x-validation/application/project/entry/src/main/resources/rawfile/workflows/configs/';
+  const templates = fs.readdirSync(configs).filter(name => name.endsWith('.json'));
+  assert.ok(templates.length >= 12);
+  for (const name of templates) {
+    const raw = fs.readFileSync(configs + name, 'utf8');
+    for (const autoSave of [true, false]) {
+      const calls = [];
+      const { AndroidWorkflow } = module('shared-frontend/adapters/platform/AndroidWorkflow.ets', 'AndroidWorkflow', {
+        WorkflowStorage: { updateTaskRun() {}, readTaskWorkflowJson: () => raw, runsDir: () => '/fixture' },
+        DataManagerFacade: class { storage = { ensureDir() {}, writeJsonAtomic() {} }; ensureReady() {} },
+        Bridge: { createBridge: () => ({ async callMethod(method, ...args) {
+          calls.push(method);
+          if (method === 'workflowStartCollection') {
+            assert.equal(args[0], raw);
+            assert.equal(args[2], autoSave);
+            return 'run';
+          }
+          return JSON.stringify({ v: 1, status: 'done', result: JSON.stringify({ status: 'success', steps: [], resultSummary: '', message: '' }) });
+        } }) }
+      });
+      await AndroidWorkflow.run('/fixture', { id: name }, { throwIfCancelled() {}, setHandler() {} }, undefined, !autoSave, autoSave);
+      assert.deepEqual(calls, ['workflowStartCollection', 'workflowPoll'], name);
+    }
+  }
 });
 
 await check('only a persisted workflow summary makes results ready for sync', async () => {

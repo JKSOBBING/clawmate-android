@@ -27,7 +27,9 @@ class MikaWorkflowSession(
     private val key: String,
     private val vision: MikaVisionConfig?,
     runName: String,
-    modelAccess: com.clawmate.app.task.runner.WorkflowModelTool? = null,
+    private val modelAccess: com.clawmate.app.task.runner.WorkflowModelTool? = null,
+    autoSave: Boolean = false,
+    private val destination: String = "",
 ) : WorkflowGuiTask, Closeable {
     internal var purpose: String? = null
         private set
@@ -47,8 +49,11 @@ class MikaWorkflowSession(
         }.takeUnless { it.isEmpty() }?.toString()
     }
 
-    internal val collection = modelAccess?.let { VirtualWorkflowCollection(activity, it) }
-    internal val previewState = MikaPreviewState()
+    internal val collection = modelAccess?.let { VirtualWorkflowCollection(activity, it, autoSave) }
+    internal suspend fun runPublic(definition: com.clawmate.app.task.model.WorkflowDefinition) =
+        GuiControlEntry.runWorkflow(activity, definition, requireNotNull(modelAccess), destination, requireNotNull(collection))
+
+    internal val previewState = MikaPreviewState(hidden = collection == null)
     internal var packageName = ""
     internal var appName = ""
     internal var runId = ""

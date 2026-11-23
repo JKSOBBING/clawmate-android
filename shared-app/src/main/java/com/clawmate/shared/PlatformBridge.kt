@@ -407,8 +407,10 @@ class PlatformBridge(private val activity: StageActivity) :
     fun workflowDeciderHttpAllowed(url: String): Boolean = com.clawmate.platform.mika.MikaVisionConfig.run {
         permitsWorkflowHttp(url, workflowHttpOrigin(activity))
     }
-    fun workflowStartCollection(raw: String, runName: String): String =
-        startWorkflow(raw, interactive = true, collectionRun = runName)
+    fun workflowStartCollection(raw: String, runName: String, autoSave: Boolean, destination: String): String {
+        require(destination.length <= 240 && destination.none(Char::isISOControl))
+        return startWorkflow(raw, interactive = true, collectionRun = runName, autoSave = autoSave, destination = destination)
+    }
     fun workflowStartInteractive(raw: String): String = startWorkflow(raw, interactive = true)
     fun workflowStartGui(raw: String, destination: String): String {
         require(destination.isNotBlank() && destination.length <= 240 && destination.none(Char::isISOControl)) { "Decider 目标无效" }
@@ -422,11 +424,11 @@ class PlatformBridge(private val activity: StageActivity) :
     }
 
     private fun startWorkflow(raw: String, interactive: Boolean, destination: String = "",
-        mika: com.clawmate.platform.gui.MikaWorkflowSession? = null, collectionRun: String? = null): String {
+        mika: com.clawmate.platform.gui.MikaWorkflowSession? = null, collectionRun: String? = null, autoSave: Boolean = false): String {
         require(raw.length <= 256000) { "工作流配置过长" }
         val mailbox = WorkflowModelMailbox()
         val session = mika ?: collectionRun?.let {
-            com.clawmate.platform.gui.MikaWorkflowSession(activity, "", "", "", null, it, mailbox)
+            com.clawmate.platform.gui.MikaWorkflowSession(activity, "", "", "", null, it, mailbox, autoSave, destination)
         }
         return try {
             val id = workflowJobs.start {

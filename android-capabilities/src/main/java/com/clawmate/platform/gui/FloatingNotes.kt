@@ -1,23 +1,16 @@
 package com.clawmate.platform.gui
 
-import android.animation.ValueAnimator
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
-import android.graphics.PixelFormat
+import android.util.Size
 import android.text.TextUtils
 import android.view.Gravity
-import android.view.View
-import android.view.WindowManager
-import android.view.animation.AccelerateDecelerateInterpolator
-import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.Toast
 import org.json.JSONArray
-import kotlin.math.abs
-import kotlin.math.roundToInt
 
 /** The home board publishes its current pending rows to the app-private store. */
 object FloatingNotes {
@@ -77,105 +70,48 @@ object FloatingNotes {
     }
 }
 
-internal class FloatingNoteWindow(context: Context, capture: () -> Unit) : FrameLayout(context) {
-    private val style = GuiCollectionStyle(context)
-    private val manager = context.getSystemService(WindowManager::class.java)
-    private val anchor = FloatingPosition(context)
-    private val size = style.dp(48)
-    private val surface = style.noteSurface()
-    private val logo = floatingLogo(context, "ClawMate 便签，单击看提醒，双击采集当前页")
-    private val content = LinearLayout(context).apply {
-        orientation = LinearLayout.VERTICAL
-        setPadding(style.dp(12), 0, style.dp(12), style.dp(12))
-    }
+internal class FloatingNoteWindow(context: Context, capture: () -> Unit) :
+    DockedPanelWindow(context, "ClawMate 悬浮便签", "ClawMate 便签，单击看提醒，双击采集当前页") {
     private val rows = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
     private val scroll = ScrollView(context).apply { addView(rows) }
-    private val params = WindowManager.LayoutParams(size, size, WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_SECURE, PixelFormat.TRANSLUCENT)
-        .apply { title = "ClawMate 悬浮便签" }
-    private var screen = anchor.viewport()
-    private var fullWidth = size
-    private var fullHeight = size
-    private var fraction = 0f
-    private var open = false
-    private var morph: ValueAnimator? = null
-
-    init {
-        background = surface
-        clipToOutline = true
-        content.setOnClickListener { openHome() }
-        content.addView(style.label("提醒事项", 16, true).apply {
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, 0, size, 0)
-            setOnClickListener { openHome() }
-        }, LinearLayout.LayoutParams(-1, size))
-        content.addView(scroll, LinearLayout.LayoutParams(-1, -2))
-        addView(content, LayoutParams(-2, -2, Gravity.TOP or Gravity.LEFT))
-        addView(logo, LayoutParams(size, size, Gravity.TOP or Gravity.RIGHT))
-        logo.setOnClickListener { toggle() }
-        anchor.gestures(logo, this, params, capture)
-        render(0f)
-        anchor.place(params, screen)
+    override val panelHeader = style.label("提醒事项", 16, true).apply {
+        gravity = Gravity.CENTER_VERTICAL
+        setOnClickListener { openHome() }
+    }
+    override val panelView = LinearLayout(context).apply {
+        orientation = LinearLayout.VERTICAL
+        background = style.noteSurface()
+        setPadding(style.dp(12), style.dp(4), style.dp(12), style.dp(10))
+        addView(panelHeader, LinearLayout.LayoutParams(-1, style.dp(48)))
+        addView(scroll, LinearLayout.LayoutParams(-1, -2))
+        setOnClickListener { openHome() }
     }
 
-    fun show() = manager.addView(this, params)
+    init {
+        logo.setOnClickListener { expand(!expanded) }
+        dragFrom(logo, capture)
+    }
 
-    fun close() {
-        if (isAttachedToWindow) manager.removeViewImmediate(this)
+    override fun onExpansionChanged() {
+        logo.contentDescription = if (expanded) "收起提醒，双击采集当前页" else "ClawMate 便签，单击看提醒，双击采集当前页"
+        if (expanded) refresh()
     }
 
     private fun openHome() {
-        if (!open) return
+        if (!expanded) return
         val intent = context.packageManager.getLaunchIntentForPackage(context.packageName) ?: return
         intent.action = FloatingNotes.OPEN_HOME
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
         try {
             context.startActivity(intent)
-            toggle()
+            expand(false)
         } catch (_: android.content.ActivityNotFoundException) {
             Toast.makeText(context, "暂时无法打开 ClawMate 首页", Toast.LENGTH_SHORT).show()
         }
     }
 
-    private fun toggle() {
-        open = !open
-        logo.contentDescription = if (open) "收起提醒，双击采集当前页" else "ClawMate 便签，单击看提醒，双击采集当前页"
-        morph?.cancel()
-        if (open) refresh()
-        val target = if (open) 1f else 0f
-        if (!ValueAnimator.areAnimatorsEnabled() || fraction == target) {
-            render(target)
-            return
-        }
-        morph = ValueAnimator.ofFloat(fraction, target).apply {
-            duration = (250 * abs(target - fraction)).toLong().coerceAtLeast(1)
-            interpolator = AccelerateDecelerateInterpolator()
-            addUpdateListener { render(it.animatedValue as Float) }
-            start()
-        }
-    }
-
-    /** Animate the actual touchable window. Its gravity holds the same physical edge for every frame. */
-    private fun render(value: Float) {
-        fraction = value
-        surface.cornerRadius = size / 2f + (style.dp(16) - size / 2f) * value
-        surface.alpha = (255 * value).roundToInt()
-        content.visibility = if (value == 0f) View.INVISIBLE else View.VISIBLE
-        content.alpha = ((value - .25f) / .75f).coerceIn(0f, 1f)
-        content.importantForAccessibility = if (value == 1f) View.IMPORTANT_FOR_ACCESSIBILITY_AUTO else View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
-        val width = size + ((fullWidth - size) * value).roundToInt()
-        val height = size + ((fullHeight - size) * value).roundToInt()
-        if (params.width == width && params.height == height) return
-        params.width = width
-        params.height = height
-        anchor.place(params, screen)
-        if (isAttachedToWindow) manager.updateViewLayout(this, params)
-    }
-
     fun refresh() {
-        screen = anchor.viewport()
-        if (!open) return
-        fullWidth = minOf(style.dp(236), screen.width)
+        if (!expanded) return
         val lines = FloatingNotes.lines(context, System.currentTimeMillis())
         rows.removeAllViews()
         for (line in lines.ifEmpty { listOf("暂无待办提醒") }) {
@@ -186,26 +122,16 @@ internal class FloatingNoteWindow(context: Context, capture: () -> Unit) : Frame
                 setOnClickListener { openHome() }
             })
         }
-        val bodyWidth = (fullWidth - content.paddingLeft - content.paddingRight).coerceAtLeast(0)
-        rows.measure(MeasureSpec.makeMeasureSpec(bodyWidth, MeasureSpec.EXACTLY), MeasureSpec.UNSPECIFIED)
-        val listLimit = (screen.height - size - content.paddingBottom).coerceAtLeast(0)
-        scroll.layoutParams = scroll.layoutParams.apply { height = minOf(rows.measuredHeight, style.dp(120), listLimit) }
-        content.measure(MeasureSpec.makeMeasureSpec(fullWidth, MeasureSpec.EXACTLY),
-            MeasureSpec.makeMeasureSpec(screen.height, MeasureSpec.AT_MOST))
-        fullHeight = content.measuredHeight
-        content.layoutParams = content.layoutParams.apply { width = fullWidth; height = fullHeight }
-        render(fraction)
+        placePanel()
     }
 
-    override fun onConfigurationChanged(config: android.content.res.Configuration) {
-        super.onConfigurationChanged(config)
-        refresh()
-        anchor.place(params, screen)
-        if (isAttachedToWindow) manager.updateViewLayout(this, params)
-    }
-
-    override fun onDetachedFromWindow() {
-        morph?.cancel()
-        super.onDetachedFromWindow()
+    override fun panelSize(available: Size): Size {
+        val width = minOf(style.dp(220), available.width)
+        val body = (width - panelView.paddingLeft - panelView.paddingRight).coerceAtLeast(1)
+        rows.measure(MeasureSpec.makeMeasureSpec(body, MeasureSpec.EXACTLY), MeasureSpec.UNSPECIFIED)
+        val chrome = style.dp(48) + panelView.paddingTop + panelView.paddingBottom
+        val height = minOf(rows.measuredHeight, style.dp(120), (available.height - chrome).coerceAtLeast(0))
+        if (scroll.layoutParams.height != height) scroll.layoutParams = scroll.layoutParams.apply { this.height = height }
+        return Size(width, chrome + height)
     }
 }

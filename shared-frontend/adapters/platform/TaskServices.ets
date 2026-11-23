@@ -58,6 +58,6 @@ export function taskServiceLabel(steps: WorkflowStep[]): string {
   if (mika && accessibility) { return '含不兼容的采集节点'; }
   if (mika) { return 'Mika 虚拟屏'; }
   if (modelChoice) { return 'AI 界面采集 · 单次确认'; }
-  if (accessibility) { return '无障碍采集 · 单次确认'; }
+  if (accessibility) { return '虚拟屏采集'; }
   return visual ? '视觉问答 · 发送前确认' : '本机工作流';
 }

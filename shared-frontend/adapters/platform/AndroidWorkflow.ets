@@ -1,4 +1,3 @@
-import { promptAction } from '@kit.ArkUI';
 import { dailyLogMaxEntryId } from '../utils/DailyLogEntryIdentity';
 import Bridge from '@arkui-x.bridge';
 import { WorkflowTask, WorkflowDefinition, WorkflowStep } from '../utils/WorkflowTypes';
@@ -28,7 +27,7 @@ export class AndroidWorkflow {
 
   static async run(filesDir: string, task: WorkflowTask, cancellation: WorkflowCancellation,
     authorize: () => Promise<void> = async (): Promise<void> => { throw new Error('请在共享任务页确认云端授权'); },
-    interactive: boolean = false): Promise<boolean> {
+    interactive: boolean = false, autoSave: boolean = false): Promise<boolean> {
     let bridge = Bridge.createBridge('ClawMatePlatform');
     let id = '';
     let started = new Date();
@@ -41,32 +40,27 @@ export class AndroidWorkflow {
       cancellation.throwIfCancelled();
       let raw = WorkflowStorage.readTaskWorkflowJson(filesDir, task);
       let guiConfig: CloudChatCompletionOptions | null = null;
-      let needsDecider = /"action"\s*:\s*"(xhs_public_notes|collection_model_read)"/.test(raw);
       let definition = JSON.parse(raw) as WorkflowDefinition;
       let steps = definition.steps || [];
       let wechatCapture = steps[0]?.package_name === 'com.tencent.mm' && /"time_context"\s*:\s*"capture_only"/.test(raw);
-      let needsMika = AndroidWorkflow.needsMika(steps);
-      let nativePublic = steps.length > 0 && (steps[0].action === 'weibo_open_board' ||
-        (steps[0].action === 'xhs_public_notes' && steps[0].task_description === '采集当前页的公开笔记摘录，然后向下翻一页，再采集这一页，最后打开预览。'));
-      let localCollection = /"action"\s*:\s*"collection_(open_app|navigate|read_pages|model_read|preview)"/.test(raw);
-      if (localCollection || needsMika || nativePublic || /"type"\s*:\s*"android_accessibility"/.test(raw)) {
-        await ensureCollectionAccess(cancellation, localCollection || needsMika || nativePublic || needsDecider);
+      let localCollection = AndroidWorkflow.needsMika(steps) ||
+        /"type"\s*:\s*"android_accessibility"|"action"\s*:\s*"collection_(open_app|navigate|read_pages|model_read|preview)"/.test(raw);
+      if (localCollection) {
+        await ensureCollectionAccess(cancellation, true);
+        let destination = '';
+        if (steps[0]?.action === 'xhs_public_notes' &&
+          steps[0].task_description !== '采集当前页的公开笔记摘录，然后向下翻一页，再采集这一页，最后打开预览。') {
+          model = new WorkflowVlm();
+          guiConfig = await model.prepareGui(authorize);
+          destination = guiConfig.baseUrl + '（' + (guiConfig.model || '服务端默认 Decider') + '）';
+        }
         cancellation.throwIfCancelled();
-      }
-      if (localCollection || (needsMika && !nativePublic)) {
-        id = await bridge.callMethod('workflowStartCollection', raw, runName) as string;
-      } else if (nativePublic) {
-        id = await bridge.callMethod('workflowStartInteractive', raw) as string;
-      } else if (interactive && needsDecider) {
-        model = new WorkflowVlm();
-        guiConfig = await model.prepareGui(authorize);
-        cancellation.throwIfCancelled();
-        id = await bridge.callMethod('workflowStartGui', raw, guiConfig.baseUrl + '（' + (guiConfig.model || '服务端默认 Decider') + '）') as string;
+        id = await bridge.callMethod('workflowStartCollection', raw, runName, autoSave, destination) as string;
       } else {
         id = await bridge.callMethod(interactive ? 'workflowStartInteractive' : 'workflowStart', raw) as string;
       }
       cancellation.setHandler((): void => { model?.cancel(); bridge.callMethod('workflowCancel', id).catch(() => {}); });
-      let deadline = Date.now() + (needsMika || localCollection ? 665000 : needsDecider || /"type"\s*:\s*"android_accessibility"/.test(raw) ? 110000 : 65000);
+      let deadline = Date.now() + (localCollection ? 665000 : 65000);
       while (Date.now() < deadline) {
         cancellation.throwIfCancelled();
         let poll = JSON.parse(await bridge.callMethod('workflowPoll', id) as string) as ExecutionPoll;
@@ -123,12 +117,6 @@ export class AndroidWorkflow {
               record.result_screenshot_path = step.output.result_screenshot_path;
               record.result_screenshot_paths = step.output.result_screenshot_paths;
             }
-          }
-          if (wechatCapture && savedSummary) {
-            let choice = await promptAction.showDialog({ title: '保存此次微信采集？', message: result.resultSummary,
-              buttons: [{ text: '取消', color: '#65718B' }, { text: '保存到本机', color: '#276EF1' }] });
-            cancellation.throwIfCancelled();
-            if (choice.index !== 1) { throw new Error('已取消保存微信采集'); }
           }
           if (savedSummary) {
             let startDay = started.getFullYear().toString() + '-' + String(started.getMonth() + 1).padStart(2, '0') + '-' + String(started.getDate()).padStart(2, '0');

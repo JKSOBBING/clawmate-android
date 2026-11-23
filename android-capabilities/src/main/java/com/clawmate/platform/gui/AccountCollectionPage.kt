@@ -69,11 +69,15 @@ internal enum class AccountCollectionPage(val pkg: String, val accountTab: Strin
             var taps = 0
             var profileReached = false
             var returnedFromDetail = false
-            val lastAttempt = if (this == XHS && bottom) 17 else 9
+            val lastAttempt = if (bottom) 24 else 9
             for (attempt in 0..lastAttempt) {
                 val screen = snapshot()
                 val ocr = if (this == ELE && (attempt > 0 || !bottom)) port.readVisibleText().orEmpty() else emptyList()
                 if (onList(screen, ocr)) return
+                if (bottom && localEntry(screen, label, true) == null && CollectionSplash.dismiss(port, screen, ocr, snapshot)) {
+                    delay(400)
+                    continue
+                }
                 if (this == ELE && bottom && !returnedFromDetail && EleOrderFields.isOrderDetail(ocr)) {
                     check(port.back() is ActionResult.Ok) { "无法从原订单详情返回" }
                     returnedFromDetail = true
