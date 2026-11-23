@@ -5,7 +5,6 @@ import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
 import android.util.Size
-import android.text.TextUtils
 import android.view.Gravity
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -114,13 +113,14 @@ internal class FloatingNoteWindow(context: Context, capture: () -> Unit) :
         if (!expanded) return
         val lines = FloatingNotes.lines(context, System.currentTimeMillis())
         rows.removeAllViews()
-        for (line in lines.ifEmpty { listOf("暂无待办提醒") }) {
+        if (lines.isEmpty()) {
+            rows.addView(style.label("暂无待办提醒", 13))
+        } else lines.forEachIndexed { index, line ->
             rows.addView(style.label(line, 13).apply {
-                maxLines = 1
-                ellipsize = TextUtils.TruncateAt.END
-                setPadding(0, style.dp(4), 0, style.dp(2))
+                background = style.reminderSurface()
+                setPadding(style.dp(10), style.dp(8), style.dp(10), style.dp(8))
                 setOnClickListener { openHome() }
-            })
+            }, LinearLayout.LayoutParams(-1, -2).apply { if (index > 0) topMargin = style.dp(6) })
         }
         placePanel()
     }

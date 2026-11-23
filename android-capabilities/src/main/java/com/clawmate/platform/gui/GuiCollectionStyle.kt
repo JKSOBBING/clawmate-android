@@ -35,6 +35,7 @@ internal class GuiCollectionStyle(private val context: Context) {
     }
 
     fun noteSurface() = rounded(surface, 16, outline = true)
+    fun reminderSurface() = rounded(soft, 10, outline = true)
 
     fun card(compact: Boolean = false) = LinearLayout(context).apply {
         orientation = LinearLayout.VERTICAL
