@@ -31,7 +31,7 @@ object SharedNativeWork {
         val collection = session?.collection
         if (collection != null && parsed.definition.steps.any { it.type == GuiCollectionWorkflow.TYPE &&
                 (it.action == "xhs_public_notes" || it.action?.startsWith("weibo_") == true) }) {
-            return@runBlocking session.runPublic(parsed.definition)
+            return@runBlocking collection.results.receipt(session.runPublic(parsed.definition))
         }
         if (collection == null && GuiCollectionWorkflow.containsNode(parsed.definition.steps)) {
             if (guiTask != null) return@runBlocking WorkflowRunResult(RunStatus.BLOCKED, "请将 Mika GUI 任务与旧版按次确认采集分开运行")
@@ -42,12 +42,12 @@ object SharedNativeWork {
         WorkflowRunnerImpl(modelTool = modelTool, guiTask = guiTask, maxMillis = if (guiTask == null) 60_000 else 660_000).run(parsed.definition)
             .let { result ->
                 if (collection == null) result else {
-                    if (result.status == RunStatus.SUCCESS && result.resultSummary.isNotBlank() && !collection.savedRecord &&
+                    if (result.status == RunStatus.SUCCESS && (result.resultSummary.isNotBlank() || collection.results.autoSave && session.packageName == "com.tencent.mm") && !collection.savedRecord &&
                         session.packageName.isNotEmpty()) {
-                        val approved = collection.saveSummary(session.packageName, session.appName, result.resultSummary)
+                        val approved = collection.saveSummary(session.packageName, session.appName, result)
                         if (!approved) return@runBlocking result.copy(status = RunStatus.CANCELLED, message = "已取消保存", resultSummary = "", summaryEntries = emptyList())
                     }
-                    result.copy(collectionModelRequests = collection.requests.get())
+                    collection.results.receipt(result.copy(collectionModelRequests = collection.requests.get()))
                 }
             }
     }

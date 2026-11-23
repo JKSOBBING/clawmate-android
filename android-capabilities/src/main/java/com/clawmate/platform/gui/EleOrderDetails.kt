@@ -82,9 +82,10 @@ internal object EleOrderFields {
     }
 }
 
-internal class EleOrderDetails(private val port: MikaScreenPort, private val snapshot: suspend () -> ScreenSnapshot) {
+internal class EleOrderDetails(private val port: MikaScreenPort, private val review: DailyReview? = null, private val snapshot: suspend () -> ScreenSnapshot) {
     private val page = AccountCollectionPage.ELE
     private val visited = mutableSetOf<String>()
+    val recordIds = mutableMapOf<String, String>()
     var opens = 0
     var returns = 0
     val reasons = mutableListOf<String>()
@@ -286,19 +287,28 @@ internal class EleOrderDetails(private val port: MikaScreenPort, private val sna
     }
 
 
+    private fun creationTime(rows: List<VisibleTextLine>): String? {
+        if (!detailPage(rows)) return null
+        val field = rows.firstOrNull { it.text.trim().startsWith("下单时间") || it.text.trim().startsWith("订单创建时间") } ?: return null
+        return rows.filter { kotlin.math.abs(it.y - field.y) < 10 }.sortedBy { it.x }.joinToString(" ") { it.text.trim() }
+            .substringAfter("下单时间").substringAfter("订单创建时间").trim(' ', ':', '：').takeIf(String::isNotEmpty)
+    }
+
     private suspend fun visit(card: AccountCollectionPage.OrderCard, point: VisibleTextLine, identityOnly: Boolean = false): Visit {
         tap(point.x, point.y)
         port.waitStable(850)
         var rows = emptyList<VisibleTextLine>()
         var label: VisibleTextLine? = null
+        var orderTime: String? = null
         for (attempt in 0..4) {
             delay(280)
             rows = read()
+            if (review != null) orderTime = orderTime ?: creationTime(rows)
             label = disclosure(rows)
             if (label != null) break
             val screen = snapshot()
             if (attempt >= 1 && page.onList(screen, rows)) {
-                return Visit(Detail(card.summary() + " · 详情未打开", 0), null, cards(rows))
+                return Visit(if (review == null) Detail(card.summary() + " · 详情未打开", 0) else null, null, cards(rows))
             }
             if (attempt == 2 && EleOrderFields.isOrderDetail(rows)) {
                 // A restored detail can start below the item section, at the invoice or order information.
@@ -309,12 +319,28 @@ internal class EleOrderDetails(private val port: MikaScreenPort, private val sna
         }
         val confirmed = label != null || detailPage(rows)
         if (confirmed) opens++
-        val key = orderKey(rows)
-        val result = when {
-            identityOnly || key != null && key in visited -> null
+        var key = orderKey(rows)
+        val details = when {
+            identityOnly || key != null && key in visited || review != null && orderTime != null && !review.matches(orderTime, review.now()) -> null
             label != null -> readDetail(rows, label, card)
             else -> Detail(card.summary() + " · 详情未读到价格明细", 0)
         }
+        if (review != null && confirmed && !identityOnly && orderTime == null) {
+            // Lower order-information fields can be outside the initial viewport. Bind to this detail before returning.
+            for (attempt in 1..2) {
+                val screen = snapshot()
+                if (port.swipe(screen.width / 2, screen.height * 4 / 5, screen.width / 2, screen.height / 3, 650) !is ActionResult.Ok) break
+                port.waitStable(700)
+                val lower = read()
+                if (!detailPage(lower)) break
+                val lowerKey = orderKey(lower)
+                if (key != null && lowerKey != null && lowerKey != key) break
+                key = key ?: lowerKey
+                orderTime = creationTime(lower)
+                if (orderTime != null) break
+            }
+        }
+        val result = details?.takeIf { review == null || review.matches(orderTime.orEmpty(), review.now()) }
         check(port.back() is ActionResult.Ok) { "未能返回订单列表" }
         repeat(5) {
             delay(250)
@@ -323,7 +349,9 @@ internal class EleOrderDetails(private val port: MikaScreenPort, private val sna
                 val current = cards(after)
                 if (current.isNotEmpty() && (page.onList(snapshot(), after) || locate(card, current, card.headerY) != null)) {
                     if (confirmed) returns++
-                    return Visit(result, key, current)
+                    val timed = if (result != null && orderTime != null) result.copy(text =
+                        "下单时间 " + orderTime + " · " + result.text + (key?.let { " · 单号尾号 " + it.takeLast(6) } ?: "")) else result
+                    return Visit(timed, key, current)
                 }
             }
         }
@@ -353,9 +381,10 @@ internal class EleOrderDetails(private val port: MikaScreenPort, private val sna
             }
             val selected = best
             if (selected == null) { partial = true; continue }
-            val detail = selected.detail ?: continue
             selected.key?.let { visited.add(it) }
+            val detail = selected.detail ?: continue
             partial = partial || detail.fields < 3
+            if (review != null) selected.key?.let { recordIds[detail.text] = it }
             result += detail.text
             reasons += original.priceRead
         }

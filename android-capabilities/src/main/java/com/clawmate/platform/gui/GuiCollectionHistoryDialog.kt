@@ -15,7 +15,6 @@ import android.view.Window
 import android.view.WindowManager
 import android.widget.*
 import java.text.DateFormat
-import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -36,6 +35,7 @@ internal class GuiCollectionHistoryDialog(
     private var first = 0
     private var offset = 0
     private var records = emptyList<GuiCollection>()
+    private var showAllCaptures = false
     private val time = DateFormat.getTimeInstance(DateFormat.SHORT)
     private val fullDate = DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT)
     private val zone = ZoneId.systemDefault()
@@ -63,7 +63,7 @@ internal class GuiCollectionHistoryDialog(
     private fun dp(value: Int) = style.dp(value)
     private fun column() = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
     private fun space(height: Int) = LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(height) }
-    private fun date(record: GuiCollection) = Instant.ofEpochMilli(record.capturedAt).atZone(zone).toLocalDate()
+    private fun date(record: GuiCollection) = record.displayDay(zone)
     private fun dayLabel(day: LocalDate): String = when (day) {
         LocalDate.now(zone) -> "今天"
         LocalDate.now(zone).minusDays(1) -> "昨天"
@@ -93,9 +93,15 @@ internal class GuiCollectionHistoryDialog(
 
     private fun showList() {
         selected = null
-        records = load()
+        val all = load().sortedWith(compareByDescending<GuiCollection> { date(it) }.thenByDescending { it.capturedAt })
+        val distinct = GuiCollectionHistory.distinctCaptures(all, zone)
+        records = if (showAllCaptures) all else distinct
         shell.removeAllViews()
-        header(groupLabel ?: "本机采集记录", "共 ${records.size} 条记录", false)
+        header(groupLabel ?: "本机采集记录", "共 " + records.size + " 条记录", false)
+        if (all.size > distinct.size) {
+            val label = if (showAllCaptures) "收起相同采集" else "展开 " + (all.size - distinct.size) + " 次相同采集"
+            shell.addView(style.action(label) { showAllCaptures = !showAllCaptures; first = 0; offset = 0; showList() })
+        }
         if (records.isEmpty()) {
             shell.addView(style.label("暂无采集记录", 17, true).apply { gravity = Gravity.CENTER }, LinearLayout.LayoutParams(-1, 0, 1f))
             return
@@ -171,7 +177,8 @@ internal class GuiCollectionHistoryDialog(
     private fun showDetail(record: GuiCollection) {
         selected = record
         shell.removeAllViews()
-        header(record.sourceLabel, fullDate.format(Date(record.capturedAt)), true)
+        val captured = fullDate.format(Date(record.capturedAt))
+        header(record.sourceLabel, if (record.reviewDay.isEmpty()) captured else "回顾 " + record.reviewDay + " · 采集于 " + captured, true)
         val content = column().apply { setPadding(dp(6), 0, dp(6), dp(12)) }
         val scroll = ScrollView(activity).apply { addView(content) }
         shell.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))

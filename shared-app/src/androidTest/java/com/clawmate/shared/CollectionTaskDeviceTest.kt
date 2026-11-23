@@ -82,13 +82,28 @@ class CollectionTaskDeviceTest {
                 for (record in records) assertEquals(record.optString("message"), "success", record.getString("status"))
                 if (records.size == selected.size) {
                     assertEquals(selected, records.map { File(it.getString("workflow_file")).nameWithoutExtension }.toSet())
-                    assertEquals(before + selected.size, JSONArray(history.readText()).length())
-                    for (id in selected) assertTrue(File(root, "daily-log").walkTopDown().any {
-                        it.isFile && it.name == "android-$id.md" && it.readText().contains("workflow:" + File(records.first { r ->
-                            File(r.getString("workflow_file")).nameWithoutExtension == id
-                        }.getString("run_dir")).name)
-                    })
-                    inst.sendStatus(0, Bundle().apply { putString("review", "2 tasks, 2 history records and matching daily log batches") })
+                    val day = java.time.LocalDate.now().toString()
+                    val saved = JSONArray(history.readText())
+                    assertTrue(saved.length() in before..before + selected.size)
+                    val today = (0 until saved.length()).map(saved::getJSONObject).filter { it.optString("reviewDay") == day }
+                    assertEquals(1, today.count { it.has("weibo") })
+                    val identities = mutableSetOf<Pair<String, String>>()
+                    for (batch in today.filter { !it.has("weibo") }) {
+                        val rows = batch.getJSONArray("lines")
+                        for (i in 0 until rows.length()) assertTrue("Repeated reviewed item",
+                            identities.add(batch.getString("reviewTask") to rows.getString(i)))
+                    }
+                    for (run in records) {
+                        val task = File(run.getString("workflow_file")).nameWithoutExtension
+                        val text = run.optString("result_summary")
+                        if (text.isEmpty()) continue
+                        val path = File(root, "daily-log/$day/android-$task.md")
+                        val log = path.readText().substringAfter("-->").lines().map { it.trim().replaceFirst(Regex("""^\d+\. """), "") }
+                        for (line in text.lines().distinct()) assertEquals("Journal must contain each reviewed item once", 1, log.count { it == line })
+                    }
+                    inst.sendStatus(0, Bundle().apply { putString("review",
+                        "2 tasks verified, native batches added=" + (saved.length() - before) +
+                            ", items reported=" + records.map { it.optString("result_summary").lineSequence().count(String::isNotBlank) }) })
                     return
                 }
                 SystemClock.sleep(350)
@@ -181,9 +196,10 @@ class CollectionTaskDeviceTest {
                     val result = JSONObject(poll.getString("result"))
                     assertEquals(result.optString("message"), if (cancelPreview) "cancelled" else "success", result.getString("status"))
                     assertEquals(!autoSave, sawPreview)
-                    assertEquals(before + if (cancelPreview) 0 else 1, size())
-                    val lines = if (cancelPreview) 0 else JSONArray(history.readText()).getJSONObject(0).getJSONArray("lines").length()
-                    if (!cancelPreview) assertTrue(lines > 0)
+                    if (autoSave) assertTrue(size() in before..before+1)
+                    else assertEquals(before + if (cancelPreview) 0 else 1, size())
+                    val lines = if (cancelPreview || autoSave && size() == before) 0 else JSONArray(history.readText()).getJSONObject(0).getJSONArray("lines").length()
+                    if (!cancelPreview && !autoSave) assertTrue(lines > 0)
                     inst.sendStatus(0, Bundle().apply { putString("collection", "$template autoSave=$autoSave controls=$controls preview=$sawPreview savedLines=$lines") })
                     return
                 }

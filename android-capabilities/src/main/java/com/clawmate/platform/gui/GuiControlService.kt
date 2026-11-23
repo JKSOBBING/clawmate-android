@@ -1074,7 +1074,7 @@ class GuiControlService : AccessibilityService() {
                     run.selectedTab?.let { tab ->
                         if (XhsGuiWorkflow.tabs(root, safeBounds(bounds), run.keyword)[tab]?.isSelected != true) return null
                     }
-                    val page = XhsGuiWorkflow.page(root, safeBounds(bounds), run.keyword) ?: return null
+                    val page = XhsGuiWorkflow.page(root, safeBounds(bounds), run.keyword, run.collection.results.review) ?: return null
                     return Triple(window.id, bounds, page)
                 }
                 var page = withTimeoutOrNull(10_000) {
@@ -1086,6 +1086,7 @@ class GuiControlService : AccessibilityService() {
                     seen
                 } ?: error("未识别到小红书公开搜索结果，请检查登录状态、网络或客户端版本")
                 val excerpts = linkedSetOf<String>()
+                val dated = linkedSetOf<String>()
                 var pages = 0
                 var scrolls = 0
                 repeat(8) {
@@ -1118,6 +1119,7 @@ class GuiControlService : AccessibilityService() {
                     }
                     when (action) {
                         "read_visible" -> {
+                            dated += fresh.third.dated
                             excerpts.addAll(fresh.third.excerpts.filterNot(excerpts::contains).take(XhsGuiWorkflow.MAX_ENTRIES - excerpts.size))
                             pages++
                         }
@@ -1134,7 +1136,8 @@ class GuiControlService : AccessibilityService() {
                         }
                         "finish" -> {
                             val record = GuiCollection(XhsGuiWorkflow.PACKAGE, "${XhsGuiWorkflow.LABEL} · ${run.keyword}",
-                                System.currentTimeMillis(), excerpts.toList(), partial = true, pages = pages)
+                                System.currentTimeMillis(), if (run.collection.results.autoSave) excerpts.filter(dated::contains) else excerpts.toList(),
+                                partial = true, pages = pages, reviewDay = run.collection.results.review?.day?.toString().orEmpty())
                             status.text = if (run.collection.results.autoSave) "正在保存" else "等待核对与保存"
                             val saved = showCollectionPreview(record, "搜索关键词：${run.keyword}", turn, id, bounds,
                                 brandedTitle = "小红书公开笔记预览")

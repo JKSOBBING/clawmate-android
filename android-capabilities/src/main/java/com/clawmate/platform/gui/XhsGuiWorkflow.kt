@@ -122,7 +122,7 @@ internal object XhsGuiWorkflow {
     fun isPublicTab(label: String) = label in setOf(DEFAULT_TAB, "综合", "全部笔记", "综合笔记", "综合结果", "全部结果", "综合搜索")
 
     @RequiresApi(34)
-    fun page(root: AccessibilityNodeInfo, area: Rect, keyword: String): XhsPublicPage? {
+    fun page(root: AccessibilityNodeInfo, area: Rect, keyword: String, review: DailyReview? = null): XhsPublicPage? {
         val toolbarBottom = searchBottom(root, area, keyword) ?: return null
         // The first TextView in each two-column result card contains the public excerpt.
         val list = descendants(root, area, 18).take(260)
@@ -133,17 +133,26 @@ internal object XhsGuiWorkflow {
             readable(card, area) && bounds.top >= toolbarBottom &&
                 bounds.width() in (area.width() / 3)..(area.width() * 3 / 5)
         }.sortedWith(compareBy({ it.weiboBounds().top }, { it.weiboBounds().left }))
+        val dated = mutableSetOf<String>()
         val excerpts = cards.mapNotNull { card ->
             val nodes = descendants(card, area, 10).take(70).toList()
             if (nodes.none { it.isClickable }) return@mapNotNull null
-            nodes.firstOrNull { it.className?.toString() == "android.widget.TextView" && !it.text.isNullOrBlank() }
-                ?.text?.toString()?.trim()?.takeIf { it.length in 2..140 }
+            val title = nodes.firstOrNull { it.className?.toString() == "android.widget.TextView" && !it.text.isNullOrBlank() }
+                ?: return@mapNotNull null
+            val text = title.text.toString().trim().takeIf { it.length in 2..140 } ?: return@mapNotNull null
+            if (review != null && nodes.any { it != title && it.className?.toString() == "android.widget.TextView" &&
+                it.weiboBounds().top >= title.weiboBounds().bottom && it.text?.toString()?.let { stamp ->
+                    val id = it.viewIdResourceName.orEmpty().substringAfterLast('/')
+                    (id.contains("date", true) || id.contains("time", true) || stamp.startsWith("发布于") ||
+                        stamp.any(Char::isDigit) || stamp == "刚刚") && review.matches(stamp, review.now())
+                } == true }) dated += text
+            text
         }.distinct()
-        return XhsPublicPage(list, excerpts)
+        return XhsPublicPage(list, excerpts, dated)
     }
 }
 
-internal data class XhsPublicPage(val list: AccessibilityNodeInfo, val excerpts: List<String>)
+internal data class XhsPublicPage(val list: AccessibilityNodeInfo, val excerpts: List<String>, val dated: Set<String>)
 
 internal class XhsGuiRun(
     val step: WorkflowStep, val keyword: String, val prompt: String, val model: WorkflowModelTool,

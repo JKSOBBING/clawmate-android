@@ -89,8 +89,8 @@ def debugDecider = providers.gradleProperty('clawmateDebugDeciderOrigin')
 androidComponents.onVariants(androidComponents.selector().withBuildType('release')) { variant ->
     variant.applicationId.set(experience ? 'com.clawmate.experience' : 'com.clawmate.app')
     variant.outputs.each {
-        it.versionCode.set(experience ? 8 : 3)
-        it.versionName.set(experience ? '1.1.0-beta.6' : '1.1.0-rc.1')
+        it.versionCode.set(experience ? 9 : 3)
+        it.versionName.set(experience ? '1.1.0-beta.7' : '1.1.0-rc.1')
     }
     if (experience) {
         // Pin the upstream Decider (including scheme and port). Private deployment inputs stay out of Git.

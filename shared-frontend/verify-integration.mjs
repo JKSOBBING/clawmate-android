@@ -414,7 +414,7 @@ await check('ordinary nested gui_task uses the authorized Mika host and preserve
   const raw = JSON.stringify({ steps: [{ type: 'if', then_steps: [{ type: 'gui_task', task_description: '从屏幕读取文字' }] }] });
   const calls = [];
   const { AndroidWorkflow } = module('shared-frontend/adapters/platform/AndroidWorkflow.ets', 'AndroidWorkflow', {
-    ...module(generated + 'utils/DailyLogEntryIdentity.ets', 'dailyLogMaxEntryId'),
+    ...module(generated + 'utils/DailyLogEntryIdentity.ets', 'dailyLogMaxEntryId,dailyLogEntryBlocks'),
     WorkflowStorage: { updateTaskRun() {}, readTaskWorkflowJson: () => raw, runsDir: () => '/fixture' },
     AppStorage: { get() { return ''; } },
     DataManagerFacade: class { storage = { ensureDir() {}, writeJsonAtomic() {} }; ensureReady() {} },
@@ -444,7 +444,7 @@ await check('virtual collection in a nested branch needs no model configuration 
   const calls = [];
   let record;
   const { AndroidWorkflow } = module('shared-frontend/adapters/platform/AndroidWorkflow.ets', 'AndroidWorkflow', {
-    ...module(generated + 'utils/DailyLogEntryIdentity.ets', 'dailyLogMaxEntryId'),
+    ...module(generated + 'utils/DailyLogEntryIdentity.ets', 'dailyLogMaxEntryId,dailyLogEntryBlocks'),
     WorkflowStorage: { updateTaskRun() {}, readTaskWorkflowJson: () => raw, runsDir: () => '/fixture' },
     DataManagerFacade: class { storage = { ensureDir() {}, writeJsonAtomic(path, value) { record = value; } }; ensureReady() {} },
     Bridge: { createBridge: () => ({ async callMethod(name) {
@@ -490,6 +490,40 @@ await check('all installed collection templates use the same phone entry and dai
   }
 });
 
+await check('daily review replays a verified receipt without duplicating its day log', async () => {
+  const files = new Map();
+  const day = '2026-11-23';
+  const batch = new Date(2026, 10, 23, 23, 59).getTime();
+  let rows = ['今天的第一条', '另一条'];
+  let sourceDay = day;
+  let marks = 0;
+  const { AndroidWorkflow } = module('shared-frontend/adapters/platform/AndroidWorkflow.ets', 'AndroidWorkflow', {
+    ...module(generated + 'utils/DailyLogEntryIdentity.ets', 'dailyLogMaxEntryId,dailyLogEntryBlocks'),
+    WorkflowStorage: { updateTaskRun() {}, readTaskWorkflowJson: () => '{"steps":[{"type":"android_accessibility","action":"collection_read_pages"}]}', runsDir: () => '/runs' },
+    CollectionReminderService: { async recordSuccessfulCollection() { marks++; } },
+    DataManagerFacade: class { paths = { dailyLogRoot: '/days' }; storage = { ensureDir() {}, exists: p => files.has(p),
+      readText: p => files.get(p), writeJsonAtomic() {}, writeTextAtomic: (p,s) => files.set(p,s) }; ensureReady() {} },
+    Bridge: { createBridge: () => ({ async callMethod(method, ...args) {
+      if (method === 'workflowStartCollection') { assert.ok(args[1].startsWith('android-' + batch + '-')); return 'run'; }
+      return JSON.stringify({v:1,status:'done',result:JSON.stringify({status:'success',message:'ok',steps:[],
+        resultSummary:rows.join('\n'), summaryEntries:[{day:sourceDay,text:rows.join('\n')}]})});
+    } }) }
+  });
+  const run = () => AndroidWorkflow.run('/fixture', {id:'history', title:'历史', sceneId:12},
+    {throwIfCancelled(){},isCancelled(){return false;},setHandler(){}}, undefined, false, true, batch);
+  assert.equal(await run(), true);
+  const before = files.get('/days/' + day + '/android-history.md');
+  assert.equal(await run(), false);
+  assert.equal(files.get('/days/' + day + '/android-history.md'), before);
+  rows = ['另一条','新条目'];
+  assert.equal(await run(), true);
+  assert.equal(files.get('/days/' + day + '/android-history.md').match(/另一条/g).length, 1);
+  sourceDay = '2026-11-22'; rows = ['昨天的条目'];
+  assert.equal(await run(), false);
+  assert.equal(files.size, 1);
+  assert.equal(marks, 2);
+});
+
 await check('only a persisted workflow summary makes results ready for sync', async () => {
   const files = new Map(), statuses = []; let cancelled = false, nativeCalls = 0, collectionMarks = 0;
   let result = { status: 'success', message: 'completed', resultSummary: '真实输入的输出', steps: [] };
@@ -497,7 +531,7 @@ await check('only a persisted workflow summary makes results ready for sync', as
   const storage = { ensureDir() {}, exists: path => files.has(path), readText: path => files.get(path) ?? '',
     writeTextAtomic: (path, value) => files.set(path, value), writeJsonAtomic: (path, value) => files.set(path, JSON.stringify(value)) };
   const { AndroidWorkflow } = module('shared-frontend/adapters/platform/AndroidWorkflow.ets', 'AndroidWorkflow', {
-    ...module(generated + 'utils/DailyLogEntryIdentity.ets', 'dailyLogMaxEntryId'),
+    ...module(generated + 'utils/DailyLogEntryIdentity.ets', 'dailyLogMaxEntryId,dailyLogEntryBlocks'),
     WorkflowStorage: { updateTaskRun: (_, id, status) => statuses.push(status), readTaskWorkflowJson: () => '{"steps":[]}', runsDir: () => '/fixture/runs' },
     DataManagerFacade: class { storage = storage; paths = { dailyLogRoot: '/fixture/daily-log' }; ensureReady() {} },
     CollectionReminderService: { recordSuccessfulCollection: async () => { collectionMarks++; assert.ok([...files.keys()].some(path => path.endsWith('.md'))); } },

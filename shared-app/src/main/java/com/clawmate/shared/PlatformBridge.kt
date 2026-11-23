@@ -428,7 +428,8 @@ class PlatformBridge(private val activity: StageActivity) :
         require(raw.length <= 256000) { "工作流配置过长" }
         val mailbox = WorkflowModelMailbox()
         val session = mika ?: collectionRun?.let {
-            com.clawmate.platform.gui.MikaWorkflowSession(activity, "", "", "", null, it, mailbox, autoSave, destination)
+            com.clawmate.platform.gui.MikaWorkflowSession(activity, "", "", "", null, it, mailbox, autoSave, destination,
+                java.security.MessageDigest.getInstance("SHA-256").digest(raw.toByteArray()).joinToString("") { b -> "%02x".format(b) })
         }
         return try {
             val id = workflowJobs.start {

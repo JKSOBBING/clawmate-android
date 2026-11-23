@@ -31,13 +31,25 @@ internal class CollectionDeclined : IllegalStateException("已取消本次采集
 
 /** All screen reads and actions use the same target-bound virtual display. Model reads use the approved collection service. */
 internal class VirtualWorkflowCollection(private val activity: Activity, private val authorization: WorkflowModelTool,
-    autoSave: Boolean = false,
+    private val review: DailyReview? = null,
 ) {
-    val results = CollectionResults(autoSave)
+    val results = CollectionResults(review)
     val savedRecord get() = results.savedRecord
 
-    suspend fun saveSummary(target: String, label: String, summary: String): Boolean =
-        results.save(activity, GuiCollection(target, label, System.currentTimeMillis(), summary.lines().filter(String::isNotBlank), partial = false))
+    suspend fun saveSummary(target: String, label: String, result: com.clawmate.app.task.runner.WorkflowRunResult): Boolean {
+        val lines = if (review == null) result.resultSummary.lines().filter(String::isNotBlank)
+        else if (target == "com.tencent.mm") result.steps.flatMap { step ->
+            val output = step.output
+            if (step.status != com.clawmate.app.task.runner.RunStatus.SUCCESS || output == null ||
+                output["capture_only"] != JsonPrimitive(true)) return@flatMap emptyList()
+            val capturedDay = (output["capture_day"] as? JsonPrimitive)?.contentOrNull?.let { date ->
+                runCatching { java.time.LocalDate.parse(date) }.getOrNull()
+            } ?: return@flatMap emptyList()
+            review.chat((output["response"] as? JsonPrimitive)?.content.orEmpty().lines(), capturedDay.atStartOfDay(review.zone))
+        }.distinct() else emptyList()
+        return results.save(activity, GuiCollection(target, label, System.currentTimeMillis(), lines,
+            partial = false, reviewDay = review?.day?.toString().orEmpty()))
+    }
 
     val requests = AtomicInteger()
     val http = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false)
@@ -206,12 +218,12 @@ internal class VirtualWorkflowCollection(private val activity: Activity, private
         var inspected = 0
         var lastCandidates: List<String>? = null
         val orderReader = if (!visual && accountPage == AccountCollectionPage.ELE) {
-            EleOrderDetails(requireNotNull(port as? MikaScreenPort)) { safeScreen(port, target) }
+            EleOrderDetails(requireNotNull(port as? MikaScreenPort), review) { safeScreen(port, target) }
         } else null
         orderDetails = orderReader
         val accumulator = GuiCollectionAccumulator()
         var limited = false
-        val first = GuiCollection(target, label, System.currentTimeMillis(), emptyList(), false)
+        val first = GuiCollection(target, label, System.currentTimeMillis(), emptyList(), false, reviewDay = review?.day?.toString().orEmpty())
         for (page in 1..limit) {
             port.waitStable(1400)
             var screen = try { safeScreen(port, target) } catch (failure: IllegalStateException) {
@@ -238,8 +250,9 @@ internal class VirtualWorkflowCollection(private val activity: Activity, private
                     onList = account.onList(screen, text) || continuedOrders
                     if (onList) {
                         accountWindow = window
-                        accountLines = lines
-                        if (accountLines.isNotEmpty() || visibleOrders.isNotEmpty()) break
+                        accountLines = if (review != null && account != AccountCollectionPage.ELE)
+                            review.page(screen.elements, lines.toSet(), review.now()) else lines
+                        if (lines.isNotEmpty() || visibleOrders.isNotEmpty()) break
                     }
                 }
                 if (!onList && accumulator.entryCount > 0) { limited = true; break }
@@ -263,7 +276,7 @@ internal class VirtualWorkflowCollection(private val activity: Activity, private
                     if (evidence.hasQuotes) { limited = true; break }
                     error("读取期间目标页发生变化")
                 }
-                val candidates = ChatCollectionEvidence.visibleLines((body + ocr).joinToString("\n"), inputs,
+                val candidates = if (review != null) review.page(screen.elements, null, review.now()) else ChatCollectionEvidence.visibleLines((body + ocr).joinToString("\n"), inputs,
                     screen.elements.firstOrNull { it.editable && it.focused }?.name)
                 if (page > 1 && candidates == lastCandidates) break
                 lastCandidates = candidates
@@ -273,9 +286,11 @@ internal class VirtualWorkflowCollection(private val activity: Activity, private
             }
             val lines = if (evidence != null) emptyList() else if (account != null) {
                 (if (orderReader != null && visibleOrders.isNotEmpty())
-                    orderReader.pageRecords(visibleOrders) else accountLines).also {
-                    check(it.isNotEmpty() || page > 1) { "已进入目标页，尚未读到可核实的记录或空列表提示" }
+                    orderReader.pageRecords(visibleOrders) else if (review != null && account == AccountCollectionPage.ELE) emptyList() else accountLines).also {
+                    check(review != null || it.isNotEmpty() || page > 1) { "已进入目标页，尚未读到可核实的记录或空列表提示" }
                 }
+            } else if (review != null) {
+                review.page(screen.elements, null, review.now())
             } else if (visual) {
                 val image = requireNotNull(port.screenshotPng()) { "当前页面无法截图" }
                 requireNotNull(pageReader).ask("根据给定截图回答问题，仅提取可见内容。", prompt, listOf(image)).lines()
@@ -287,11 +302,11 @@ internal class VirtualWorkflowCollection(private val activity: Activity, private
             }
             val unique = lines.filter { it.isNotBlank() }.map { it.take(500) }.distinct()
             val overlap = orderReader != null && visibleOrders.isNotEmpty() && page > 1
-            if (unique.isEmpty() && page > 1 && account != null && !overlap) { limited = true; break }
-            check(evidence != null || unique.isNotEmpty() || overlap) { "在目标页面未读取到可见内容" }
+            if (review == null && unique.isEmpty() && page > 1 && account != null && !overlap) { limited = true; break }
+            check(review != null || evidence != null || unique.isNotEmpty() || overlap) { "在目标页面未读取到可见内容" }
             val added = evidence != null || accumulator.append(first.copy(lines = unique))
             limited = account != null && page == limit
-            if (page == limit || !accumulator.hasCapacity || !added && account != AccountCollectionPage.ELE) break
+            if (page == limit || !accumulator.hasCapacity || review == null && !added && account != AccountCollectionPage.ELE) break
             val scroller = if (account == null) screen.elements.firstOrNull { it.scrollable }
                 else screen.elements.filter { it.scrollable && it.bounds[3] - it.bounds[1] > 280 && it.bounds[2] - it.bounds[0] > 550 }
                     .sortedByDescending { it.role == "RecyclerView" }.firstOrNull()
@@ -309,11 +324,13 @@ internal class VirtualWorkflowCollection(private val activity: Activity, private
             check(outcome is ActionResult.Ok) { "采集翻页失败：$outcome" }
         }
         if (evidence != null) {
+            if (review != null && !evidence.hasQuotes) return first
             check(evidence.hasQuotes) { "已检查 $inspected 页，尚未找到可核实原文：" + evidence.missing.joinToString("、") }
-            return first.copy(lines = evidence.recordLines(), pages = inspected,
+            return first.copy(lines = if (review == null) evidence.recordLines() else evidence.quotedLines(), pages = inspected,
                 partial = limited || !evidence.complete)
         }
-        return accumulator.record(first, incomplete = limited || !accumulator.hasCapacity || orderReader?.partial == true)
+        val result = accumulator.record(first, incomplete = limited || !accumulator.hasCapacity || orderReader?.partial == true)
+        return if (review != null && orderReader != null) result.copy(reviewIds = orderReader.recordIds.filterKeys { it in result.lines }) else result
     }
 
     private suspend fun save(record: GuiCollection): String {

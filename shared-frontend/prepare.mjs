@@ -679,7 +679,7 @@ let taskPage = applyPatches(read('pages/task/TaskPage.ets'), [
   [/  onRunWorkflow: [^]*?(?=  onRunPhoneWorkflow:)/,
     '  onRunWorkflow: (task: WorkflowTask, cancellation: WorkflowCancellation) => Promise<boolean> = async (): Promise<boolean> => false;\n'],
   [/  onRunPhoneWorkflow: [^]*?\n  \};/,
-    '  onRunPhoneWorkflow: (task: WorkflowTask, cancellation: WorkflowCancellation, interactive: boolean, autoSave: boolean) => Promise<boolean> =\n    async (): Promise<boolean> => false;'],
+    '  onRunPhoneWorkflow: (task: WorkflowTask, cancellation: WorkflowCancellation, interactive: boolean, autoSave: boolean, reviewStarted: number) => Promise<boolean> =\n    async (): Promise<boolean> => false;'],
   ["import { AiLoginGuard } from '../../components/AiLoginGuard';\n", ''],
   ["import { SelfHdcSetupGuard } from '../../utils/selfhdc/SelfHdcSetupGuard';\n", ''],
   [/^    if \(!AiLoginGuard.ensure\(this.getUIContext\(\)\)\) \{(?: return; \}|\n      return;\n    \})\n/gm, ''],
@@ -691,16 +691,16 @@ let taskPage = applyPatches(read('pages/task/TaskPage.ets'), [
     '      this.batchCancellation = new WorkflowCancellation();\n      await this.runSelectedWorkflow(currentTask, this.batchCancellation, true);'],
   ['      this.preparingTaskId = \'\';\n      this.runningTaskId = \'\';', "      this.preparingTaskId = '';\n      this.runningTaskId = '';\n      this.batchCancellation = null;"],
   [/  private async runSelectedWorkflow\([^]*?\n  \}/, `  private async runSelectedWorkflow(task: WorkflowTask, cancellation: WorkflowCancellation,
-    interactive: boolean = false, autoSave: boolean = false): Promise<boolean> {
+    interactive: boolean = false, autoSave: boolean = false, reviewStarted: number = 0): Promise<boolean> {
     cancellation.throwIfCancelled();
-    const saved = this.taskControlMode === 'phone' ? await this.onRunPhoneWorkflow(task, cancellation, interactive, autoSave) :
+    const saved = this.taskControlMode === 'phone' ? await this.onRunPhoneWorkflow(task, cancellation, interactive, autoSave, reviewStarted) :
       await this.onRunWorkflow(task, cancellation);
     if (saved) { this.androidCollectedResultsReady = true; SettingsStore.save(); }
     return saved;
   }`],
-  ['    let attemptedTasks = 0;', '    let collectedSummaries = 0;'],
+  ['    let attemptedTasks = 0;', '    let collectedSummaries = 0;\n    const reviewStarted = Date.now();'],
   ['          attemptedTasks++;\n          await this.runSelectedWorkflow(currentTask, cancellation, i === 0 ? preparedSettings : undefined);',
-    '          if (await this.runSelectedWorkflow(currentTask, cancellation, false, !automatic)) { collectedSummaries++; }'],
+    '          if (await this.runSelectedWorkflow(currentTask, cancellation, false, !automatic, reviewStarted)) { collectedSummaries++; }'],
   ["            this.tasks = WorkflowStorage.updateTaskRun(this.filesDir, currentTask.id, 'failed', err.message);",
     '            this.tasks = WorkflowStorage.loadTasks(this.filesDir);'],
   [/      \} else if \(attemptedTasks > 0\) \{[^]*?\n      \}\n    \} finally \{/,
@@ -708,7 +708,7 @@ let taskPage = applyPatches(read('pages/task/TaskPage.ets'), [
         if (AUTO_SYNC_AFTER_BATCH_TASKS && this.active) { await this.syncSavedCollections(); }
         else { showToastSafely('采集结果已保存，可同步到汇总', 2200); }
       } else if (!stoppedByError) {
-        showToastSafely('已完成开启任务的依次执行', 1500);
+        showToastSafely('已完成回顾，没有新增可同步的内容', 1800);
       }
     } finally {`],
   ['      this.lastAutomaticReminderRequest = request;', `      const choice = await promptAction.showDialog({ title: '执行已开启的任务？',

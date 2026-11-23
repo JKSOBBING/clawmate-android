@@ -43,6 +43,8 @@ internal class ChatCollectionEvidence(val goal: String, val fields: List<String>
         return changed
     }
 
+    fun quotedLines(): List<String> = quotes.flatMap { it.keys }.distinct()
+
     fun recordLines(): List<String> {
         // Reserve a row for every field before adding second and later quotes.
         val rows = fields.indices.map { i ->

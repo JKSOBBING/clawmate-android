@@ -1,4 +1,4 @@
-import { dailyLogMaxEntryId } from '../utils/DailyLogEntryIdentity';
+import { dailyLogEntryBlocks, dailyLogMaxEntryId } from '../utils/DailyLogEntryIdentity';
 import Bridge from '@arkui-x.bridge';
 import { WorkflowTask, WorkflowDefinition, WorkflowStep } from '../utils/WorkflowTypes';
 import { WorkflowStorage } from '../utils/WorkflowStorage';
@@ -27,11 +27,11 @@ export class AndroidWorkflow {
 
   static async run(filesDir: string, task: WorkflowTask, cancellation: WorkflowCancellation,
     authorize: () => Promise<void> = async (): Promise<void> => { throw new Error('请在共享任务页确认云端授权'); },
-    interactive: boolean = false, autoSave: boolean = false): Promise<boolean> {
+    interactive: boolean = false, autoSave: boolean = false, reviewStarted: number = 0): Promise<boolean> {
     let bridge = Bridge.createBridge('ClawMatePlatform');
     let id = '';
     let started = new Date();
-    let runName = 'android-' + started.getTime().toString() + '-' + Math.floor(Math.random() * 1000000000).toString();
+    let runName = 'android-' + (autoSave && reviewStarted > 0 ? reviewStarted : started.getTime()).toString() + '-' + Math.floor(Math.random() * 1000000000).toString();
     let complete = false;
     let model: WorkflowVlm | null = null;
     let usedModel = false;
@@ -103,6 +103,15 @@ export class AndroidWorkflow {
           if (result.status !== 'success' && gui !== undefined) {
             message = '第 ' + gui.id + ' 步需要自动 GUI。请核对设备控制方式。';
           }
+          const dayClock = reviewStarted > 0 ? new Date(reviewStarted) : started;
+          const reviewDate = dayClock.getFullYear() + '-' + String(dayClock.getMonth() + 1).padStart(2, '0') + '-' + String(dayClock.getDate()).padStart(2, '0');
+          if (autoSave && result.status === 'success') {
+            const verified = localCollection ? (result.summaryEntries || []).filter((entry: WorkflowSummaryEntry): boolean =>
+              entry.day === reviewDate && entry.text.trim().length > 0) : [];
+            if (verified.length === 0 && result.resultSummary.trim()) { message = '未核实到回顾当天的条目，已跳过保存'; }
+            result.summaryEntries = verified;
+            result.resultSummary = verified.map((entry: WorkflowSummaryEntry): string => entry.text).join('\n');
+          }
           let savedSummary = result.status === 'success' && result.resultSummary.trim().length > 0;
           let record: SharedRunRecord = { source_kind: source, workflow_file: task.configFileName, run_dir: runDir,
             status: result.status, message: message, result_summary: result.resultSummary, steps: result.steps };
@@ -154,17 +163,34 @@ export class AndroidWorkflow {
                   body = body.replace(/\n+(?=\d+\. )/g, '\n\n');
                 }
               }
+              let entryText = entry.text;
+              if (autoSave) {
+                const seen = new Set<string>();
+                for (const block of dailyLogEntryBlocks(body)) {
+                  block.text.split('\n').forEach((line: string): void => { seen.add(line.trim()); });
+                }
+                const lines = entry.text.split('\n');
+                const headers = wechatCapture ? lines.filter((line: string): boolean => /^会话(类型|名称)：/.test(line)) : [];
+                const fresh = lines.filter((line: string): boolean => {
+                  const key = line.trim();
+                  if (!key || headers.includes(line) || seen.has(key)) { return false; }
+                  seen.add(key); return true;
+                });
+                if (fresh.length === 0) { continue; }
+                entryText = headers.concat(fresh).join('\n');
+              }
               let next = dailyLogMaxEntryId(body, existing?.latest_entry_index || 0, batches) + 1;
               batches[String(next)] = 'workflow:' + runName;
               let logSource = usedModel || /"source_kind"\s*:\s*"android_workflow_model"/.test(previous) ? 'android_workflow_model' : source;
               let envelope: SummaryMetadata = { workflow_metadata: { name: task.title, task_scene_id: task.sceneId, source_kind: logSource }, latest_entry_index: next, entry_batch_ids: batches };
-              let content = '<!-- DAILY_LOG_METADATA\n' + JSON.stringify(envelope) + '\n-->\n\n' + (body ? body + '\n\n' : '') + String(next) + '. ' + entry.text.replace(/\n(?=\d+\. )/g, '\n  ') + '\n\n';
+              let content = '<!-- DAILY_LOG_METADATA\n' + JSON.stringify(envelope) + '\n-->\n\n' + (body ? body + '\n\n' : '') + String(next) + '. ' + entryText.replace(/\n(?=\d+\. )/g, '\n  ') + '\n\n';
               if (content.length > 200000 || count >= 60) { throw new Error('当日日志已达保存上限'); }
               writes.set(path, content);
             }
             facade.storage.writeJsonAtomic(runDir + '/run_summary.json', record as Object);
             writes.forEach((content: string, path: string): void => { facade.storage.writeTextAtomic(path, content); });
-            CollectionReminderService.recordSuccessfulCollection().catch(() => {});
+            savedSummary = writes.size > 0;
+            if (savedSummary) { CollectionReminderService.recordSuccessfulCollection().catch(() => {}); }
           } else { facade.storage.writeJsonAtomic(runDir + '/run_summary.json', record as Object); }
           WorkflowStorage.updateTaskRun(filesDir, task.id, result.status, message +
             (result.resultSummary.length > 0 ? '\n' + result.resultSummary : ''));

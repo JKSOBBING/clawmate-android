@@ -30,6 +30,7 @@ class MikaWorkflowSession(
     private val modelAccess: com.clawmate.app.task.runner.WorkflowModelTool? = null,
     autoSave: Boolean = false,
     private val destination: String = "",
+    reviewTask: String = "",
 ) : WorkflowGuiTask, Closeable {
     internal var purpose: String? = null
         private set
@@ -49,7 +50,8 @@ class MikaWorkflowSession(
         }.takeUnless { it.isEmpty() }?.toString()
     }
 
-    internal val collection = modelAccess?.let { VirtualWorkflowCollection(activity, it, autoSave) }
+    internal val collection = modelAccess?.let { VirtualWorkflowCollection(activity, it, if (autoSave) DailyReview.at(
+        runName.removePrefix("android-").substringBefore('-').toLongOrNull() ?: System.currentTimeMillis(), reviewTask) else null) }
     internal suspend fun runPublic(definition: com.clawmate.app.task.model.WorkflowDefinition) =
         GuiControlEntry.runWorkflow(activity, definition, requireNotNull(modelAccess), destination, requireNotNull(collection))
 

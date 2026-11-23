@@ -524,6 +524,7 @@ class WorkflowRunnerImpl(
                 put("tool_name", "vlm_qa"); put("mode", request.mode); put("question", request.question); put("response", text)
                 if (request.mode == "summary") {
                     put("capture_day", request.captureDay)
+                    if (request.captureOnly) put("capture_only", true)
                     put("image", request.image)
                 }
                 structured?.let { put("structured_output", it) }

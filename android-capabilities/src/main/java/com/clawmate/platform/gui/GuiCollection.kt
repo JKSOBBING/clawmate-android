@@ -46,10 +46,17 @@ internal data class GuiCollection(
     val weibo: WeiboSnapshot? = null,
     val summary: String = "",
     val floating: FloatingExcerpt? = null,
+    val reviewDay: String = "",
+    val reviewTask: String = "",
+    val reviewIds: Map<String, String> = emptyMap(),
 ) {
     fun previewLines(): List<String> = weibo?.lead?.let {
         listOf("第 1 名 · ${it.title}\n公开内容摘录 · ${it.excerpt}") + lines
     } ?: lines
+
+    fun displayDay(zone: java.time.ZoneId): java.time.LocalDate =
+        reviewDay.takeIf(String::isNotEmpty)?.let { runCatching { java.time.LocalDate.parse(it) }.getOrNull() }
+            ?: java.time.Instant.ofEpochMilli(capturedAt).atZone(zone).toLocalDate()
 
     fun title(): String = "$sourceLabel · ${DateFormat.getDateTimeInstance().format(Date(capturedAt))}"
 
@@ -203,6 +210,44 @@ internal object GuiCollectionHistory {
         }
         write(context, listOf(value) + records)
     }
+
+    @Synchronized fun saveReview(context: Context, incoming: GuiCollection): Pair<Int, List<String>> {
+        val records = read(context)
+        val (updated, added) = mergeReview(records, incoming)
+        if (updated !== records) {
+            check(updated.size <= records.size || distinctCaptures(updated, java.time.ZoneId.systemDefault()).count { (it.weibo != null) == (incoming.weibo != null) } <= 200) { "采集记录已达上限，请先整理旧记录" }
+            write(context, updated)
+        }
+        // A retry after a failed daily-log write must receive the same canonical text for this order.
+        val canonical = updated.filter { it.reviewDay == incoming.reviewDay && it.reviewTask == incoming.reviewTask &&
+            it.sourcePackage == incoming.sourcePackage && it.sourceLabel == incoming.sourceLabel }
+            .flatMap { it.reviewIds.entries }.associate { it.value to it.key }
+        return added to incoming.lines.map { line -> incoming.reviewIds[line]?.let(canonical::get) ?: line }
+    }
+
+    internal fun mergeReview(records: List<GuiCollection>, incoming: GuiCollection): Pair<List<GuiCollection>, Int> {
+        require(incoming.reviewDay.isNotEmpty() && incoming.reviewTask.isNotEmpty())
+        val same = records.filter { it.reviewDay == incoming.reviewDay && it.reviewTask == incoming.reviewTask &&
+            it.sourcePackage == incoming.sourcePackage && it.sourceLabel == incoming.sourceLabel }
+        val board = incoming.weibo
+        if (board != null) {
+            val old = same.firstOrNull { it.weibo != null }
+            if (old?.weibo == board) return records to 0
+            val existingTitles = old?.weibo?.entries.orEmpty().map { it.title }.toSet()
+            return (listOf(incoming) + records.filterNot { it === old }) to board.entries.count { it.title !in existingTitles }
+        }
+        val seen = same.flatMap { record -> record.lines.map { record.reviewIds[it] ?: it } }.toHashSet()
+        fun heading(s: String) = incoming.sourcePackage == "com.tencent.mm" && (s.startsWith("会话名称：") || s.startsWith("会话类型："))
+        val added = incoming.lines.distinct().filter { (incoming.reviewIds[it] ?: it) !in seen && !heading(it) }.toSet()
+        if (added.isEmpty()) return records to 0
+        return (listOf(incoming.copy(lines = incoming.lines.distinct().filter { it in added || heading(it) }, reviewIds = incoming.reviewIds.filterKeys(added::contains))) + records) to added.size
+    }
+
+    internal fun distinctCaptures(records: List<GuiCollection>, zone: java.time.ZoneId): List<GuiCollection> =
+        records.distinctBy { record ->
+            if (record.reviewDay.isNotEmpty() || record.floating != null) record
+            else record.copy(capturedAt = java.time.Instant.ofEpochMilli(record.capturedAt).atZone(zone).toLocalDate().toEpochDay())
+        }
 
     @Synchronized private fun delete(context: Context, record: GuiCollection) =
         write(context, read(context).toMutableList().apply { remove(record) })
