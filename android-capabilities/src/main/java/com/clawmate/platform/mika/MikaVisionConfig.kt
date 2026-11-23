@@ -52,12 +52,14 @@ data class MikaVisionConfig(
 internal fun mikaVisionService(config: MikaVisionConfig, http: OkHttpClient) =
     VisionService(mikaVisionModel(config, http), AndroidImageOps)
 
-internal fun mikaVisionModel(config: MikaVisionConfig, http: OkHttpClient, guiAction: Boolean = false) = OpenAiCompatModel(
+internal fun mikaVisionModel(config: MikaVisionConfig, http: OkHttpClient, guiAction: Boolean = false,
+    temperature: Double? = if (guiAction) 0.0 else null,
+) = OpenAiCompatModel(
         config.baseUrl,
         config.key.ifBlank { null },
         config.modelName,
         Capabilities(toolCalls = false, vision = true, contextTokens = 16_000, reasoning = false),
         http,
         maxOutputTokens = if (guiAction) 256 else null,
-        temperature = if (guiAction) 0.0 else null,
+        temperature = temperature,
     )

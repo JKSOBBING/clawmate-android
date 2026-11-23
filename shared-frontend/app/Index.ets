@@ -604,7 +604,7 @@ struct Index {
     if (!record) { return; }
     const messages = current ? this.messages : record.messages;
     const message = messages.find((entry: ChatMessage): boolean => entry.id === id);
-    if (!message || evidence.length <= (message.readEvidence || '').length) { return; }
+    if (!message || evidence === message.readEvidence) { return; }
     message.readEvidence = evidence;
     if (current) { this.messages = messages.slice(); this.persistChat(); }
     else { ChatSessionStorage.saveSession(this.context().filesDir, record); }
@@ -1039,7 +1039,7 @@ struct Index {
           }
         }, resultId)) as MikaPhoneReceipt;
       active();
-      const prefix = receipt.status === 'success' ? '任务完成' : receipt.status === 'cancelled' ? '任务已停止' : '任务未完成';
+      const prefix = receipt.status === 'success' ? '任务完成' : receipt.status === 'partial' ? '已取得部分结果' : receipt.status === 'cancelled' ? '任务已停止' : '任务未完成';
       receipt.message = prefix + (receipt.message ? '：' + receipt.message : '');
       const result = this.messages.find((item: ChatMessage): boolean => item.id === resultId);
       if (result) {
@@ -1081,8 +1081,9 @@ struct Index {
       if (memoryId.length > 0) {
         id = await bridge.callMethod('mikaPhoneStartInConversation', goal, options.baseUrl, options.model || '', options.apiKey || '',
           method, JSON.stringify({ url: deciderUrl, model: deciderModel, key: deciderKey }), memoryId) as string;
-      } else if (method === 'mikaPhoneStart' && /^https:\/\/[^/?#@\s]+(?::\d+)?(?:\/[^?#\s]*)?$/.test(deciderUrl) && deciderModel.length <= 180) {
-        trace('Mika · 使用看图模型 ' + (deciderModel || '服务端默认 Decider'));
+      } else if (method === 'mikaPhoneStart' && (/^https:\/\/[^/?#@\s]+(?::\d+)?(?:\/[^?#\s]*)?$/.test(deciderUrl) ||
+        (deciderUrl.startsWith('http://') && await bridge.callMethod('workflowDeciderHttpAllowed', deciderUrl) === true)) && deciderModel.length <= 180) {
+        trace((deciderUrl.startsWith('http://') ? 'Mika · 原文筛选 ' : 'Mika · 使用看图模型 ') + (deciderModel || '服务端默认 Decider'));
         id = await bridge.callMethod('mikaPhoneStartWithVision', goal, options.baseUrl, options.model || '', options.apiKey || '',
           deciderUrl, deciderModel, deciderKey) as string;
       } else {
@@ -1213,7 +1214,7 @@ struct Index {
         if (this.cloudInput.trim()) { throw new Error('请先处理聊天中的草稿'); }
         const result = await this.submitPhoneTask(assignment.task.trim(), note.key);
         const state: SecretaryJobState = result.status === 'success' ? 'finished' :
-          result.status === 'cancelled' ? 'cancelled' : result.status === 'unverified' || result.status === 'needs_user' ? 'review' : 'failed';
+          result.status === 'cancelled' ? 'cancelled' : result.status === 'partial' || result.status === 'unverified' || result.status === 'needs_user' ? 'review' : 'failed';
         this.secretaryDesk.update(note.key, state, result.message.slice(0, 1200));
         return;
       }

@@ -702,7 +702,7 @@ class GuiControlService : AccessibilityService() {
                     val display = checkNotNull(backgroundDisplay)
                     check(mikaWindow(mika).displayId == display.id && display.id > 0)
                     mika.recordDispatch("weibo_search_window", display.id, true)
-                    val message = WeiboChatSearch.read(checkNotNull(mika.weiboQuery), port, mika::report, mika.onEvidence)
+                    val message = WeiboChatSearch.read(checkNotNull(mika.weiboQuery), port, mika::report, mika.onEvidence, mika.excerptReader())
                     mika.complete("success", message)
                 } catch (cancelled: kotlinx.coroutines.CancellationException) {
                     throw cancelled
@@ -719,7 +719,7 @@ class GuiControlService : AccessibilityService() {
                 } catch (failure: Exception) {
                     mika.complete(if (failure is CollectionDeclined) "cancelled" else "failed", failure.message ?: "工作流界面动作失败")
                 }
-            } else mika.execute(MikaScreenPort(this@GuiControlService, mika, checkNotNull(grant).target, targetLabel)) {
+            } else mika.execute(MikaScreenPort(this@GuiControlService, mika, checkNotNull(grant).target, targetLabel), checkNotNull(grant).target) {
                 status.text = it
             }
             if (mikaRun === mika) stop("Mika 手机任务已结束")

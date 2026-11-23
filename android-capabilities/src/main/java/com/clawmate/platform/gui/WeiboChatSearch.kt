@@ -119,8 +119,11 @@ internal object WeiboChatSearch {
         it.resourceId?.substringAfterLast('/') in bodies && !it.editable && !it.secret
     }.map { it.name.replace(whitespace, " ").trim() }.filter { it.length >= 8 }.distinctBy(::folded)
 
-    suspend fun read(query: String, port: MikaScreenPort, progress: (String) -> Unit, evidence: (String) -> Unit): String {
+    suspend fun read(query: String, port: MikaScreenPort, progress: (String) -> Unit, evidence: (String) -> Unit,
+        reader: (suspend (String, String) -> String)? = null): String {
         val results = Results(query)
+        val semantic = ChatCollectionEvidence(query, listOf(query))
+        val reviewed = mutableSetOf<String>()
         val deadline = SystemClock.elapsedRealtime() + 12_000
         progress("核对微博搜索词「$query」")
         var frame = port.snapshot()
@@ -139,9 +142,15 @@ internal object WeiboChatSearch {
             pages++
             val previous = results.count
             val beforePage = results.inspectedCount
-            results.addPage(posts(frame))
+            val bodies = posts(frame)
+            results.addPage(bodies)
+            val other = bodies.filter { reviewed.add(it) && !matchesExcerpt(it, queryTerms(query)) }
+            val selected = reader != null && other.isNotEmpty() && semantic.review(other, "微博 · 第 ${page} 屏", reader)
             repeats = if (results.inspectedCount == beforePage) repeats + 1 else 0
-            if (results.count > previous) evidence(results.evidence())
+            if (results.count > previous || selected) {
+                evidence(listOfNotNull(results.evidence().takeIf { results.count > 0 },
+                    semantic.render().takeIf { semantic.hasQuotes }).joinToString("\n\n"))
+            }
             progress("微博「$query」· 第 $page 屏，已读 ${results.count} 条博文")
             if (page == 8 || repeats >= 2 || results.count >= 24) break
             val x = frame.width / 2
@@ -150,6 +159,8 @@ internal object WeiboChatSearch {
             frame = port.snapshot()
         }
         return when {
+            semantic.hasQuotes -> "已核对微博搜索结果 $pages 屏。\n" + semantic.render() +
+                (if (results.count > 0) "\n另有 ${results.count} 条直接匹配的摘录。" else "")
             results.count == 0 -> "已核对微博「$query」综合搜索结果 $pages 屏，检查了 ${results.inspectedCount} 条不同正文，未找到可核实的匹配博文。"
             results.partialCount > 0 -> "已核对微博「$query」综合搜索结果 $pages 屏，保存 ${results.count} 条摘录，其中 ${results.partialCount} 条为部分匹配。"
             else -> "已读取微博「$query」综合搜索结果，共 $pages 屏、${results.count} 条正文含检索词的博文。下方是去重后的正文摘录。"

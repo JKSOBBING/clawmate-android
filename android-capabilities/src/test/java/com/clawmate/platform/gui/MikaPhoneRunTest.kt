@@ -158,6 +158,32 @@ class MikaPhoneRunTest {
         assertTrue(screen.reads > 0)
     }
 
+    @Test fun chatCollectionReturnsQuotedEvidenceEvenWhenOneRequestedFieldIsMissing() = runTest {
+        val model = object : ChatModel {
+            override val capabilities = Capabilities(true, false, 16_000, false)
+            var calls = 0
+            override suspend fun complete(system: String, messages: List<Message>, tools: List<ToolSpec>): ModelReply =
+                if (calls++ == 0) ModelReply(listOf(Part.ToolCall("read", "phone_observe", "{}")), StopReason.ToolUse, null)
+                else ModelReply(listOf(Part.Text("Fixture title")), StopReason.EndTurn, null)
+        }
+        val selector = object : ChatModel {
+            override val capabilities = model.capabilities
+            override suspend fun complete(system: String, messages: List<Message>, tools: List<ToolSpec>): ModelReply {
+                val json = if (system == ChatCollectionEvidence.PLAN) """{"fields":["标题","价格"]}"""
+                    else """{"Q1":["T1"]}"""
+                return ModelReply(listOf(Part.Text(json)), StopReason.EndTurn, null)
+            }
+        }
+        val updates = mutableListOf<String>()
+        val run = MikaPhoneRun("读取标题和价格", model, reviewModel = evidenceReviewer("Fixture title"),
+            textDecider = selector, onEvidence = { updates.add(it) })
+        run.execute(FixtureScreen(), "example.fixture") {}
+        val receipt = run.result.await()
+        assertEquals("partial", receipt.status)
+        assertTrue(receipt.message, "Fixture title" in receipt.message && "价格 · 暂未找到" in receipt.message)
+        assertTrue(updates.any { "「Fixture title」" in it })
+    }
+
     @Test fun unsupportedReadingIsReturnedAsUnverifiedAfterReview() = runTest {
         var first = true
         val model = object : ChatModel {

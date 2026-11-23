@@ -490,7 +490,8 @@ class PlatformBridge(private val activity: StageActivity) :
     fun mikaPhoneStartWithVision(goal: String, url: String, model: String, key: String,
         visionUrl: String, visionModel: String, visionKey: String): String {
         require(visionUrl.length <= 2048 && visionModel.length <= 180 && visionKey.length <= 4096)
-        val vision = com.clawmate.platform.mika.MikaVisionConfig.parse(visionUrl, visionModel, visionKey)
+        val vision = com.clawmate.platform.mika.MikaVisionConfig.parse(visionUrl, visionModel, visionKey,
+            com.clawmate.platform.mika.MikaVisionConfig.workflowHttpOrigin(activity))
         return startMika(goal, url, model, key, MikaPhoneMode.SCREEN, vision)
     }
     fun mikaSystemTaskStart(goal: String, url: String, model: String, key: String): String =
@@ -599,7 +600,8 @@ class PlatformBridge(private val activity: StageActivity) :
             else -> error("invalid_phone_mode")
         }
         val v = JSONObject(visionJson)
-        val vision = com.clawmate.platform.mika.MikaVisionConfig.parse(v.optString("url"), v.optString("model"), v.optString("key"))
+        val vision = com.clawmate.platform.mika.MikaVisionConfig.parse(v.optString("url"), v.optString("model"), v.optString("key"),
+            com.clawmate.platform.mika.MikaVisionConfig.workflowHttpOrigin(activity))
         val turn = memorySessions.turn(memoryId, goal)
         return mikaJobs.startWithUpdates { progress, evidence -> runBlocking {
             MikaPhoneEntry.runCloud(activity, goal, url, model, key, phoneMode, progress, vision, turn, onEvidence = evidence)

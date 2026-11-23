@@ -83,12 +83,15 @@ internal class MikaPhoneRun(
     val workflowAction: com.clawmate.app.task.model.WorkflowStep? = null,
     private val workflowMaxSteps: Int? = null,
     val onEvidence: (String) -> Unit = {},
+    private val textDecider: ChatModel? = null,
 ) {
     /** Set by the entry point once the session mode is known: true = background display, false = main screen. */
     @Volatile var backgroundMode: Boolean = true
 
     /** 用户插话走这里；任务结束后队列不再接收。 */
     val inbox = com.wangzan101.mika.core.run.RunInbox()
+
+    internal fun excerptReader() = (textDecider ?: reviewModel)?.let(ChatCollectionEvidence::reader)
 
     var weiboQuery: String? = null
         private set
@@ -129,7 +132,7 @@ internal class MikaPhoneRun(
 
     fun report(message: String) = progress(message)
 
-    suspend fun execute(screen: ScreenPort, updateOverlay: (String) -> Unit) = supervisorScope {
+    suspend fun execute(screen: ScreenPort, selectedPackage: String = "", updateOverlay: (String) -> Unit) = supervisorScope {
         val model = checkNotNull(model) { "此本机动作没有模型执行器" }
         val allowed = when (mode) {
             MikaPhoneMode.SCREEN -> null
@@ -146,6 +149,9 @@ internal class MikaPhoneRun(
             ).load()
         } ?: AppPacePlan(OperatingPace.DEFAULT)
         // 运行记录：内核把已脱敏的事件推给 sink，这里落盘并同时供 history 类工具回读。
+        val readModel = excerptReader()
+        val collection = if (mode == MikaPhoneMode.SCREEN && workflow == null && selectedPackage.isNotEmpty() && readModel != null)
+            ChatCollectionEvidence.plan(goal, readModel) else null
         val runId = "mika-phone-" + System.nanoTime()
         workflow?.runId = runId
         val runStore = runsRoot?.let { MikaRunStore(it) }
@@ -183,9 +189,29 @@ internal class MikaPhoneRun(
                 "使用手机当前时区。日期、时间或标题有歧义时先询问。只在回执确认时报告已保存。"
         }
         val toolNames = tools.definitions().map { it.name }.toSet()
+        val pages = kotlinx.coroutines.channels.Channel<Pair<Int, List<String>>>(24)
+        val reviewer = launch {
+            if (collection == null || readModel == null) return@launch
+            val seen = mutableSetOf<List<String>>()
+            for ((step, lines) in pages) {
+                if (!seen.add(lines)) continue
+                if (collection.review(lines, "$selectedPackage · 第 ${step} 步", readModel)) onEvidence(collection.render())
+                if (seen.size >= 24) break
+            }
+        }
+        suspend fun finishEvidence() {
+            pages.close()
+            withTimeoutOrNull(22_000) { reviewer.join() }
+            reviewer.cancelAndJoin()
+        }
         val trace = object : RunSink {
             override fun event(e: RunEvent) {
                 recorder?.event(e)
+                if (collection != null && e is RunEvent.Observed && e.kind == "read" && e.source == "phone" &&
+                    (e.place?.name == selectedPackage || e.place?.kind == com.wangzan101.mika.core.observation.PlaceKind.Page)) {
+                    val lines = ChatCollectionEvidence.visibleLines(e.text, e.inputs.orEmpty(), e.focused)
+                    if (lines.isNotEmpty()) pages.trySend(e.step to lines)
+                }
                 val entry = when (e) {
                     is RunEvent.ModelReply -> {
                         if (!e.acted) return
@@ -235,7 +261,12 @@ internal class MikaPhoneRun(
             inlineScreen = mode == MikaPhoneMode.SCREEN,
             adaptiveVision = mode == MikaPhoneMode.SCREEN,
         )
-        val engine = AgentLoop(model, tools, basePrompt,
+        val researchPrompt = collection?.let {
+            "\n本次信息采集分项为：" + it.fields.joinToString("、") +
+                "。从已核对目标对象的卡片或详情读取原文，接受同义表达。某项缺证据时，换检索说法或翻页补查；" +
+                "连续两页没有新内容或达到执行限额就结束。逐项引用原文，明确列出缺项，并交付已有结果。"
+        }.orEmpty()
+        val engine = AgentLoop(model, tools, basePrompt + researchPrompt,
             maxSteps = stepBudget, confirmTimeoutMs = 12_000, inputTimeoutMs = 12_000,
             reviewFinalAnswer = mode == MikaPhoneMode.SCREEN,
             verifyScreenClaims = mode == MikaPhoneMode.SCREEN,
@@ -283,6 +314,7 @@ internal class MikaPhoneRun(
         try {
             select<Unit> {
                 work.onAwait { state ->
+                    if (state is TaskState.Succeeded || state is TaskState.Failed) finishEvidence()
                     finalState = state
                     if (state is TaskState.Succeeded && memoryTurn != null) {
                         memoryRuntime?.finishLater(memoryTurn, model, tools.savedChanges, runStore?.events(runId).orEmpty())
@@ -290,6 +322,16 @@ internal class MikaPhoneRun(
                     if (state is TaskState.Succeeded && routes != null && runStore != null) {
                         com.clawmate.platform.mika.MikaRouteLearning.schedule(
                             goal, state, runStore.events(runId), routes, model, tools.index, engine::noteOutcome)
+                    }
+                    if (collection != null && (state is TaskState.Succeeded || state is TaskState.Failed)) {
+                        val status = when {
+                            !collection.hasQuotes -> "unverified"
+                            state is TaskState.Succeeded && !state.doubtful && collection.complete -> "success"
+                            else -> "partial"
+                        }
+                        val reason = if (state is TaskState.Failed && !collection.hasQuotes) state.reason + "\n\n" else ""
+                        complete(status, reason + collection.render(compact = true))
+                        return@onAwait
                     }
                     when (state) {
                         is TaskState.Succeeded -> if (state.doubtful) {
@@ -323,6 +365,8 @@ internal class MikaPhoneRun(
             complete("failed", "Mika 无法继续，请检查模型和目标应用。")
         } finally {
             withContext(kotlinx.coroutines.NonCancellable) {
+                pages.close()
+                reviewer.cancelAndJoin()
                 handoff.cancelAndJoin()
                 work.cancelAndJoin()
                 meter.cancelAndJoin()
@@ -423,7 +467,7 @@ object MikaPhoneEntry {
         val model = OpenAiCompatModel(base, key.ifBlank { null }, modelName,
             Capabilities(toolCalls = true, vision = false, contextTokens = 64_000, reasoning = true), http)
         // 看图模型只在界面任务里用；系统动作与日历批量没有屏幕可看。
-        val vision = visionConfig.takeIf { mode == MikaPhoneMode.SCREEN }?.let { mikaVisionService(it, http) }
+        val vision = visionConfig?.takeIf { mode == MikaPhoneMode.SCREEN && (workflow != null || it.baseUrl.startsWith("https://")) }?.let { mikaVisionService(it, http) }
         val deviceFiles = com.clawmate.platform.files.DeviceFilesGrant.read(activity)?.let { 
             com.clawmate.platform.files.AndroidDeviceFilesPort(activity, it) 
         }
@@ -436,6 +480,9 @@ object MikaPhoneEntry {
             paceFile = paceFile,
             memoryRuntime = withContext(Dispatchers.IO) { com.clawmate.platform.mika.memory.MikaMemoryRuntime.of(activity) },
             conversationTurn = conversationTurn,
+            textDecider = visionConfig?.takeIf { mode == MikaPhoneMode.SCREEN && workflow == null }?.let {
+                com.clawmate.platform.mika.mikaVisionModel(it, http, temperature = 0.0)
+            },
             reviewModel = if (mode == MikaPhoneMode.SCREEN) OpenAiCompatModel(
                 base, key.ifBlank { null }, modelName, model.capabilities, workflow?.collection?.http ?: reviewHttp) else model,
             budgetMs = budgetMs, workflow = workflow, openOnly = openOnly, workflowAction = workflowAction, workflowMaxSteps = maxSteps, onEvidence = onEvidence)

@@ -29,7 +29,7 @@ internal fun collectionPrerequisite(labels: List<String>): String? {
 
 internal class CollectionDeclined : IllegalStateException("已取消本次采集，未保存")
 
-/** All screen reads and actions use the same target-bound virtual display. Only ask() has a model transport. */
+/** All screen reads and actions use the same target-bound virtual display. Model reads use the approved collection service. */
 internal class VirtualWorkflowCollection(private val activity: Activity, private val authorization: WorkflowModelTool,
     autoSave: Boolean = false,
 ) {
@@ -78,10 +78,6 @@ internal class VirtualWorkflowCollection(private val activity: Activity, private
             MikaVisionConfig.workflowHttpOrigin(activity))) {
             "请为本次接管配置 HTTPS 模型"
         }
-    }
-
-    private suspend fun ask(reason: String, system: String, question: String, images: List<ByteArray> = emptyList()): String {
-        return mikaVisionService(config(reason), http).ask(system, question, images).trim()
     }
 
     suspend fun chooseEntry(label: String, name: String, proof: String, options: List<DeciderEntry>,
@@ -200,6 +196,15 @@ internal class VirtualWorkflowCollection(private val activity: Activity, private
         require(direction in setOf("", "up", "down")) { "翻页方向无效" }
         val prompt = step.field("task_description")
         if (visual) require(prompt.length in 1..1000) { "请填写读屏问题" }
+        var pageReader = if (visual) {
+            val approved = config("$label · 分项读取：将发送问题和目标页的可见文字，纯图像问题按页读图。")
+            mikaVisionService(approved, http)
+        } else null
+        val evidence = pageReader?.let { service ->
+            ChatCollectionEvidence.plan(prompt) { system, data -> service.ask(system, data, emptyList()) }
+        }
+        var inspected = 0
+        var lastCandidates: List<String>? = null
         val orderReader = if (!visual && accountPage == AccountCollectionPage.ELE) {
             EleOrderDetails(requireNotNull(port as? MikaScreenPort)) { safeScreen(port, target) }
         } else null
@@ -209,7 +214,12 @@ internal class VirtualWorkflowCollection(private val activity: Activity, private
         val first = GuiCollection(target, label, System.currentTimeMillis(), emptyList(), false)
         for (page in 1..limit) {
             port.waitStable(1400)
-            var screen = safeScreen(port, target)
+            var screen = try { safeScreen(port, target) } catch (failure: IllegalStateException) {
+                if (failure is kotlinx.coroutines.CancellationException || evidence?.hasQuotes != true) throw failure
+                limited = true
+                break
+            }
+            if (visual && page > 1) pageReader = mikaVisionService(config("$label · 读取第 ${page} 页用于本次采集"), http)
             val account = accountPage.takeUnless { visual }
             var accountLines: List<String> = emptyList()
             var visibleOrders = emptyList<AccountCollectionPage.OrderCard>()
@@ -238,15 +248,37 @@ internal class VirtualWorkflowCollection(private val activity: Activity, private
             if (account == null && page == 1 && (readyText.isNotEmpty() || readyId.isNotEmpty())) {
                 check(screen.elements.any { matches(it, readyText, readyId) }) { "目标页面标志已消失，已停止采集" }
             }
-            val lines = if (account != null) {
+            if (evidence != null) {
+                val body = screen.elements.filter { !it.secret && !it.hint && !it.editable }.map { it.name }
+                val inputs = screen.elements.filter { it.editable }.map { it.name }
+                val window = (port as? MikaScreenPort)?.lastObservedWindow
+                val ocr = if (screen.elements.none { it.editable }) port.readVisibleText().orEmpty().map { it.text } else emptyList()
+                val verified = try { safeScreen(port, target) } catch (failure: IllegalStateException) {
+                    if (failure is kotlinx.coroutines.CancellationException || !evidence.hasQuotes) throw failure
+                    limited = true
+                    break
+                }
+                if (verified.width != screen.width || verified.height != screen.height ||
+                    window != (port as? MikaScreenPort)?.lastObservedWindow) {
+                    if (evidence.hasQuotes) { limited = true; break }
+                    error("读取期间目标页发生变化")
+                }
+                val candidates = ChatCollectionEvidence.visibleLines((body + ocr).joinToString("\n"), inputs,
+                    screen.elements.firstOrNull { it.editable && it.focused }?.name)
+                if (page > 1 && candidates == lastCandidates) break
+                lastCandidates = candidates
+                inspected++
+                val service = requireNotNull(pageReader)
+                evidence.review(candidates, "$label · 第 ${page} 页") { sys, data -> service.ask(sys, data, emptyList()) }
+            }
+            val lines = if (evidence != null) emptyList() else if (account != null) {
                 (if (orderReader != null && visibleOrders.isNotEmpty())
                     orderReader.pageRecords(visibleOrders) else accountLines).also {
                     check(it.isNotEmpty() || page > 1) { "已进入目标页，尚未读到可核实的记录或空列表提示" }
                 }
             } else if (visual) {
                 val image = requireNotNull(port.screenshotPng()) { "当前页面无法截图" }
-                ask("$label · 按任务要求读第 ${page} 页，将发送当前页截图和问题：$prompt",
-                    "根据给定截图回答问题，仅提取可见内容。", prompt, listOf(image)).lines()
+                requireNotNull(pageReader).ask("根据给定截图回答问题，仅提取可见内容。", prompt, listOf(image)).lines()
             } else {
                 screen.elements.filterNot { it.editable }.map { it.name.trim() }.filter { it.isNotEmpty() }.ifEmpty {
                     check(screen.elements.none { it.editable }) { "页面仅含输入框，无法采集可见正文" }
@@ -256,8 +288,8 @@ internal class VirtualWorkflowCollection(private val activity: Activity, private
             val unique = lines.filter { it.isNotBlank() }.map { it.take(500) }.distinct()
             val overlap = orderReader != null && visibleOrders.isNotEmpty() && page > 1
             if (unique.isEmpty() && page > 1 && account != null && !overlap) { limited = true; break }
-            check(unique.isNotEmpty() || overlap) { "在目标页面未读取到可见内容" }
-            val added = accumulator.append(first.copy(lines = unique))
+            check(evidence != null || unique.isNotEmpty() || overlap) { "在目标页面未读取到可见内容" }
+            val added = evidence != null || accumulator.append(first.copy(lines = unique))
             limited = account != null && page == limit
             if (page == limit || !accumulator.hasCapacity || !added && account != AccountCollectionPage.ELE) break
             val scroller = if (account == null) screen.elements.firstOrNull { it.scrollable }
@@ -273,7 +305,13 @@ internal class VirtualWorkflowCollection(private val activity: Activity, private
                 else -> break
             }
             if (outcome is ActionResult.Ok && outcome.changed == false && orderReader == null) break
+            if (outcome !is ActionResult.Ok && evidence?.hasQuotes == true) { limited = true; break }
             check(outcome is ActionResult.Ok) { "采集翻页失败：$outcome" }
+        }
+        if (evidence != null) {
+            check(evidence.hasQuotes) { "已检查 $inspected 页，尚未找到可核实原文：" + evidence.missing.joinToString("、") }
+            return first.copy(lines = evidence.recordLines(), pages = inspected,
+                partial = limited || !evidence.complete)
         }
         return accumulator.record(first, incomplete = limited || !accumulator.hasCapacity || orderReader?.partial == true)
     }
