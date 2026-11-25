@@ -4,6 +4,8 @@ plugins {
 }
 
 def experience = providers.gradleProperty('clawmateExperience').map { it.toBoolean() }.getOrElse(false)
+// Increment this number for each published experience beta. The first public sequence follows versionCode 9.
+def betaSequence = 1
 def runtimeDir = file('../.arkui-x-validation/application/runtime')
 android {
     namespace 'com.clawmate.shared'
@@ -89,8 +91,8 @@ def debugDecider = providers.gradleProperty('clawmateDebugDeciderOrigin')
 androidComponents.onVariants(androidComponents.selector().withBuildType('release')) { variant ->
     variant.applicationId.set(experience ? 'com.clawmate.experience' : 'com.clawmate.app')
     variant.outputs.each {
-        it.versionCode.set(experience ? 9 : 3)
-        it.versionName.set(experience ? '1.1.0-beta.7' : '1.1.0-rc.1')
+        it.versionCode.set(experience ? 9 + betaSequence : 3)
+        it.versionName.set(experience ? "Clawmate-Android-beta.${betaSequence}" : '1.1.0-rc.1')
     }
     if (experience) {
         // Pin the upstream Decider (including scheme and port). Private deployment inputs stay out of Git.
